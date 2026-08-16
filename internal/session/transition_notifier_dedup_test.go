@@ -59,9 +59,22 @@ func TestDedup_InboxSameFingerprintOnce(t *testing.T) {
 		t.Fatalf("inbox dedup: expected 1 event after 5 writes of same fingerprint, got %d", len(got))
 	}
 
-	// A different timestamp must NOT dedup — that's a different logical event.
+	// A different TURN must not dedup — that is a different logical event.
+	// Before #1948 this role was played by the timestamp; keying identity on
+	// the emit instant meant the ledger and inbox copies of ONE completion
+	// (stamped by two different code paths) never compared equal, so the
+	// cross-machine drain persisted one completion twice. The turn signal is
+	// what actually distinguishes two events; re-stamping one does not.
 	ev2 := ev
+	ev2.LastOutputHash = "turn-advanced"
 	ev2.Timestamp = ts.Add(1 * time.Second)
+
+	// Re-stamping the SAME event must still collapse.
+	restamped := ev
+	restamped.Timestamp = ts.Add(30 * time.Second)
+	if EventFingerprint(restamped) != EventFingerprint(ev) {
+		t.Fatalf("re-stamping one event must not change its identity")
+	}
 	if err := WriteInboxEvent(parent, ev); err != nil {
 		t.Fatalf("re-write same fp: %v", err)
 	}

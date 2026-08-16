@@ -393,6 +393,19 @@ func (n *TransitionNotifier) commitEventToInbox(event TransitionNotificationEven
 		return false, true, ""
 	}
 	if parent == nil {
+		// Issue #1948 (review P1): "no parent on THIS machine" is the normal
+		// state for a worker whose conductor lives on another host, not a
+		// failure. Keep the record in the drainable unowned ledger so a pulling
+		// conductor can still see the stall; the dead-letter accounting below is
+		// untouched, so local behavior is exactly as before.
+		if isUnownedReason(reason) {
+			if _, err := recordUnownedTransition(event); err != nil {
+				commsLog.Warn("unowned_transition_record_failed",
+					slog.String("child", event.ChildSessionID),
+					slog.String("reason", reason),
+					slog.String("error", err.Error()))
+			}
+		}
 		return false, false, reason
 	}
 	parentID := parent.ID
