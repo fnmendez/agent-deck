@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Conductor .claude/settings.json permission allowlist (issue #1358).
@@ -71,12 +72,15 @@ var conductorAskCommands = []string{
 // conductorWriteAllowPatterns builds the scoped file-write allowlist for a
 // conductor directory. Narrow on purpose: only the conductor's data files, never
 // a recursive /** over the dir.
+//
+// Only Edit(path) rules are emitted: current Claude Code matches file
+// permission checks against Edit rules exclusively (they cover every
+// file-editing tool) and warns that Write(path) rules are never matched.
 func conductorWriteAllowPatterns(dir string) []string {
 	return []string{
 		"Edit(//" + dir + "/*.md)",
-		"Write(//" + dir + "/*.md)",
-		"Write(//" + dir + "/state.json)",
-		"Write(//" + dir + "/task-log.md)",
+		"Edit(//" + dir + "/state.json)",
+		"Edit(//" + dir + "/task-log.md)",
 	}
 }
 
@@ -86,15 +90,30 @@ func conductorWriteAllowPatterns(dir string) []string {
 // self-escalation.
 func conductorWriteDenyPatterns(dir string) []string {
 	return []string{
-		"Write(//" + dir + "/.claude/**)",
 		"Edit(//" + dir + "/.claude/**)",
-		"Write(//" + dir + "/.mcp.json)",
 		"Edit(//" + dir + "/.mcp.json)",
-		"Write(//" + dir + "/.envrc)",
 		"Edit(//" + dir + "/.envrc)",
-		"Write(//" + dir + "/*.sh)",
 		"Edit(//" + dir + "/*.sh)",
 	}
+}
+
+// legacyWriteRule reports whether a rule is a Write(path) entry we used to
+// emit; they are dropped on rewrite because Claude Code no longer matches them.
+func legacyWriteRule(rule string) bool {
+	return strings.HasPrefix(rule, "Write(//")
+}
+
+// bypassMode reports whether the conductor runs with defaultMode
+// bypassPermissions. In that mode the user has opted out of prompts entirely:
+// ask rules would re-introduce prompts (ask overrides bypass) and deny rules
+// would block the conductor from maintaining its own directory, so neither
+// managed list is written.
+func bypassMode(perms map[string]json.RawMessage) bool {
+	var mode string
+	if raw, ok := perms["defaultMode"]; ok {
+		_ = json.Unmarshal(raw, &mode)
+	}
+	return mode == "bypassPermissions"
 }
 
 // WriteConductorClaudeSettings writes (or merges into) the conductor's
@@ -144,17 +163,28 @@ func writeConductorClaudeSettingsAt(dir string) error {
 	if err != nil {
 		return fmt.Errorf("merge permissions.allow in %s: %w", settingsPath, err)
 	}
-	ask, err := mergeUniqueRaw(permsObj["ask"], conductorAskCommands)
-	if err != nil {
-		return fmt.Errorf("merge permissions.ask in %s: %w", settingsPath, err)
-	}
-	deny, err := mergeUniqueRaw(permsObj["deny"], conductorWriteDenyPatterns(dir))
-	if err != nil {
-		return fmt.Errorf("merge permissions.deny in %s: %w", settingsPath, err)
-	}
 	permsObj["allow"] = allow
-	permsObj["ask"] = ask
-	permsObj["deny"] = deny
+	if bypassMode(permsObj) {
+		// Drop the managed prompt/deny policy: it contradicts an explicit
+		// bypassPermissions choice (ask rules override bypass and force prompts).
+		if err := dropManagedRaw(permsObj, "ask", conductorAskCommands); err != nil {
+			return fmt.Errorf("prune permissions.ask in %s: %w", settingsPath, err)
+		}
+		if err := dropManagedRaw(permsObj, "deny", conductorWriteDenyPatterns(dir)); err != nil {
+			return fmt.Errorf("prune permissions.deny in %s: %w", settingsPath, err)
+		}
+	} else {
+		ask, err := mergeUniqueRaw(permsObj["ask"], conductorAskCommands)
+		if err != nil {
+			return fmt.Errorf("merge permissions.ask in %s: %w", settingsPath, err)
+		}
+		deny, err := mergeUniqueRaw(permsObj["deny"], conductorWriteDenyPatterns(dir))
+		if err != nil {
+			return fmt.Errorf("merge permissions.deny in %s: %w", settingsPath, err)
+		}
+		permsObj["ask"] = ask
+		permsObj["deny"] = deny
+	}
 
 	permsJSON, err := json.Marshal(permsObj)
 	if err != nil {
@@ -193,6 +223,9 @@ func mergeUniqueRaw(existing json.RawMessage, additions ...[]string) (json.RawMe
 		}
 	}
 	for _, b := range base {
+		if legacyWriteRule(b) {
+			continue
+		}
 		appendUnique(b)
 	}
 	for _, add := range additions {
@@ -202,4 +235,38 @@ func mergeUniqueRaw(existing json.RawMessage, additions ...[]string) (json.RawMe
 	}
 	sort.Strings(merged)
 	return json.Marshal(merged)
+}
+
+// dropManagedRaw removes the managed entries (and legacy Write rules) from
+// perms[key], keeping user-added ones; the key is deleted when nothing remains.
+func dropManagedRaw(perms map[string]json.RawMessage, key string, managed []string) error {
+	existing, ok := perms[key]
+	if !ok || len(existing) == 0 {
+		return nil
+	}
+	var base []string
+	if err := json.Unmarshal(existing, &base); err != nil {
+		return fmt.Errorf("not a JSON string array: %w", err)
+	}
+	isManaged := map[string]bool{}
+	for _, m := range managed {
+		isManaged[m] = true
+	}
+	kept := []string{}
+	for _, b := range base {
+		if isManaged[b] || legacyWriteRule(b) {
+			continue
+		}
+		kept = append(kept, b)
+	}
+	if len(kept) == 0 {
+		delete(perms, key)
+		return nil
+	}
+	out, err := json.Marshal(kept)
+	if err != nil {
+		return err
+	}
+	perms[key] = out
+	return nil
 }

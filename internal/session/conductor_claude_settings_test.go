@@ -16,6 +16,8 @@ type conductorPermissions struct {
 	Allow []string `json:"allow,omitempty"`
 	Deny  []string `json:"deny,omitempty"`
 	Ask   []string `json:"ask,omitempty"`
+
+	DefaultMode string `json:"defaultMode,omitempty"`
 }
 
 func loadConductorPerms(t *testing.T, dir string) conductorPermissions {
@@ -124,7 +126,6 @@ func TestConductorClaudeSettings_NoBlanketDirWrite(t *testing.T) {
 
 	// No recursive write/edit over the whole conductor dir.
 	for _, bad := range []string{
-		"Write(//" + dir + "/**)",
 		"Edit(//" + dir + "/**)",
 	} {
 		if permContains(perms.Allow, bad) {
@@ -137,10 +138,10 @@ func TestConductorClaudeSettings_NoBlanketDirWrite(t *testing.T) {
 
 	// The executable/config paths must be explicitly denied.
 	for _, deny := range []string{
-		"Write(//" + dir + "/.claude/**)",
-		"Write(//" + dir + "/.mcp.json)",
-		"Write(//" + dir + "/.envrc)",
-		"Write(//" + dir + "/*.sh)",
+		"Edit(//" + dir + "/.claude/**)",
+		"Edit(//" + dir + "/.mcp.json)",
+		"Edit(//" + dir + "/.envrc)",
+		"Edit(//" + dir + "/*.sh)",
 	} {
 		if !permContains(perms.Deny, deny) {
 			t.Errorf("expected deny rule for self-escalation path: %q\ndeny=%v", deny, perms.Deny)
@@ -149,9 +150,18 @@ func TestConductorClaudeSettings_NoBlanketDirWrite(t *testing.T) {
 
 	// Scoped data-file writes ARE allowed.
 	for _, allow := range []string{
-		"Write(//" + dir + "/state.json)",
-		"Write(//" + dir + "/task-log.md)",
+		"Edit(//" + dir + "/state.json)",
+		"Edit(//" + dir + "/task-log.md)",
 	} {
+		if !permContains(perms.Allow, allow) {
+			t.Errorf("expected scoped data-file write allowed: %q\nallow=%v", allow, perms.Allow)
+		}
+	}
+	// Write(path) rules are not matched by current Claude Code file checks.
+	if anyHasPrefix(perms.Allow, "Write(") || anyHasPrefix(perms.Deny, "Write(") {
+		t.Errorf("must not emit legacy Write() rules\nallow=%v\ndeny=%v", perms.Allow, perms.Deny)
+	}
+	for _, allow := range []string{} {
 		if !permContains(perms.Allow, allow) {
 			t.Errorf("expected scoped data-file write allowed: %q\nallow=%v", allow, perms.Allow)
 		}
@@ -267,5 +277,47 @@ func TestConductorClaudeSettings_PreservesNestedPermissionKeys(t *testing.T) {
 	}
 	if !permContains(perms.Allow, "Bash(agent-deck status *)") {
 		t.Errorf("managed allow entry must be present\nallow=%v", perms.Allow)
+	}
+}
+
+// TestConductorClaudeSettings_BypassModeSkipsAskDeny verifies that an explicit
+// defaultMode=bypassPermissions is honored: managed ask/deny rules (which would
+// re-introduce prompts or block the conductor's own directory) are not written,
+// stale managed entries and legacy Write() rules are pruned, and user-added
+// entries survive.
+func TestConductorClaudeSettings_BypassModeSkipsAskDeny(t *testing.T) {
+	dir := t.TempDir()
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seed := `{"permissions":{"defaultMode":"bypassPermissions",` +
+		`"allow":["Write(//` + dir + `/state.json)"],` +
+		`"ask":["Bash(agent-deck session send *)","Bash(rm -rf *)"],` +
+		`"deny":["Write(//` + dir + `/.envrc)","Edit(//` + dir + `/.envrc)"]}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := writeConductorClaudeSettingsAt(dir); err != nil {
+		t.Fatalf("writeConductorClaudeSettingsAt: %v", err)
+	}
+	perms := loadConductorPerms(t, dir)
+	if perms.DefaultMode != "bypassPermissions" {
+		t.Fatalf("defaultMode not preserved: %q", perms.DefaultMode)
+	}
+	if permContains(perms.Ask, "Bash(agent-deck session send *)") {
+		t.Errorf("managed ask rule must not be written under bypass: ask=%v", perms.Ask)
+	}
+	if !permContains(perms.Ask, "Bash(rm -rf *)") {
+		t.Errorf("user-added ask rule must survive: ask=%v", perms.Ask)
+	}
+	if len(perms.Deny) != 0 {
+		t.Errorf("managed/legacy deny rules must be pruned under bypass: deny=%v", perms.Deny)
+	}
+	if anyHasPrefix(perms.Allow, "Write(") {
+		t.Errorf("legacy Write() allow rules must be pruned: allow=%v", perms.Allow)
+	}
+	if !permContains(perms.Allow, "Edit(//"+dir+"/state.json)") {
+		t.Errorf("Edit() data-file rule expected: allow=%v", perms.Allow)
 	}
 }
