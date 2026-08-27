@@ -147,12 +147,40 @@ RESPONSE_TIMEOUT = 300
 # Mirror the deployed bridge's file logging (<data>/conductor/bridge.log) when
 # the conductor data dir already exists. Guard so importing this module in an
 # environment without that dir (e.g. CI/tests) never fails at import time.
-_log_handlers = [logging.StreamHandler(sys.stdout)]
+_file_handler = None
 try:
     if CONDUCTOR_DIR.exists():
-        _log_handlers.append(logging.FileHandler(LOG_PATH, encoding="utf-8"))
+        _file_handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
 except OSError:
-    pass
+    _file_handler = None
+
+
+def _stdout_is(path) -> bool:
+    """True when sys.stdout already writes to the file at `path`.
+
+    Compares device+inode rather than names so a symlinked or relative path
+    still matches. Any interpreter where stdout has no real file descriptor
+    (pytest capture, pythonw) answers False.
+    """
+    try:
+        out = os.fstat(sys.stdout.fileno())
+        target = os.stat(str(path))
+    except (AttributeError, OSError, ValueError):
+        return False
+    return (out.st_dev, out.st_ino) == (target.st_dev, target.st_ino)
+
+
+# Both daemon units redirect this process's stdout into bridge.log (launchd
+# StandardOutPath, systemd StandardOutput=append:), so a stdout handler and a
+# file handler for that same file wrote every record to bridge.log twice.
+# Drop the stdout handler only when it provably targets that same file AND the
+# file handler is there to take over — the file handler flushes per record, so
+# log lines stay immediately readable (block-buffered stdout would not).
+_log_handlers = []
+if _file_handler is None or not _stdout_is(LOG_PATH):
+    _log_handlers.append(logging.StreamHandler(sys.stdout))
+if _file_handler is not None:
+    _log_handlers.append(_file_handler)
 
 logging.basicConfig(
     level=logging.INFO,
