@@ -13,10 +13,14 @@ conductor/overlay/                                 # this repo — canonical sou
 Install or update the deployed copy, then re-apply:
 
 ```sh
-cp -R conductor/overlay/ ~/.local/share/agent-deck/conductor/overlay/
+mkdir -p ~/.local/share/agent-deck/conductor/overlay
+cp -R conductor/overlay/. ~/.local/share/agent-deck/conductor/overlay/
 ~/.local/share/agent-deck/conductor/overlay/reapply.sh --dry-run
 ~/.local/share/agent-deck/conductor/overlay/reapply.sh
 ```
+
+The trailing `/.` copies the directory *contents*: plain `cp -R conductor/overlay/ <dest>/overlay/`
+would nest a second `overlay/` inside an existing destination and leave the live copy stale.
 
 `reapply.sh` restarts the bridge only when something actually changed (it tracks
 the applied `bridge_local.py` sha in `.applied-sha`), so the copy above is safe to
