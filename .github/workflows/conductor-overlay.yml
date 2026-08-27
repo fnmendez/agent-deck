@@ -1,0 +1,36 @@
+name: conductor-overlay
+
+# The conductor overlay (conductor/overlay/) adds the local Telegram commands
+# /agents, /peek and /send plus the idempotent reapply.sh. Its unit suite needs
+# no third-party packages, so it gates every change to the overlay cheaply.
+
+on:
+  pull_request:
+    paths:
+      - 'conductor/overlay/**'
+      - '.github/workflows/conductor-overlay.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'conductor/overlay/**'
+      - '.github/workflows/conductor-overlay.yml'
+
+jobs:
+  overlay-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.12']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Compile-check
+        run: python -m py_compile conductor/overlay/bridge_local.py
+      - name: Shell syntax check
+        run: bash -n conductor/overlay/reapply.sh
+      - name: Overlay unit suite
+        working-directory: conductor/overlay
+        run: python -m unittest tests.test_bridge_local -v
