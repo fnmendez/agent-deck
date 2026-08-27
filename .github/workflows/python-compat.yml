@@ -45,6 +45,10 @@ jobs:
         run: python -c "import sys; sys.path.insert(0, 'internal/session'); import conductor_bridge"
       - name: Compatibility test suite
         run: python -m pytest conductor/tests/test_python_compat.py -v
+      # bridge.log duplication gate: both daemon units redirect stdout into
+      # bridge.log, so the bridge must not also attach a FileHandler for it.
+      - name: Log-duplication regression
+        run: python -m pytest conductor/tests/test_bridge_log_duplication.py -v
 
   watchdog-tests:
     runs-on: ubuntu-latest
