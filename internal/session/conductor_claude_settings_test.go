@@ -18,6 +18,8 @@ type conductorPermissions struct {
 	Ask   []string `json:"ask,omitempty"`
 
 	DefaultMode string `json:"defaultMode,omitempty"`
+
+	DisableBypassPermissionsMode string `json:"disableBypassPermissionsMode,omitempty"`
 }
 
 func loadConductorPerms(t *testing.T, dir string) conductorPermissions {
@@ -319,5 +321,75 @@ func TestConductorClaudeSettings_BypassModeSkipsAskDeny(t *testing.T) {
 	}
 	if !permContains(perms.Allow, "Edit(//"+dir+"/state.json)") {
 		t.Errorf("Edit() data-file rule expected: allow=%v", perms.Allow)
+	}
+}
+
+// TestConductorClaudeSettings_PreservesUserAuthoredWriteRules pins that pruning
+// legacy Write() entries only removes the exact rules this generator emitted.
+// A user's own Write(...) rule — including one they added as a security deny —
+// is theirs to keep.
+func TestConductorClaudeSettings_PreservesUserAuthoredWriteRules(t *testing.T) {
+	dir := t.TempDir()
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	userAllow := "Write(//" + dir + "/notes/scratch.txt)"
+	userDeny := "Write(//etc/**)"
+	managedAllow := "Write(//" + dir + "/state.json)"
+	managedDeny := "Write(//" + dir + "/.envrc)"
+	seed := `{"permissions":{` +
+		`"allow":["` + userAllow + `","` + managedAllow + `"],` +
+		`"deny":["` + userDeny + `","` + managedDeny + `"]}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := writeConductorClaudeSettingsAt(dir); err != nil {
+		t.Fatalf("writeConductorClaudeSettingsAt: %v", err)
+	}
+	perms := loadConductorPerms(t, dir)
+
+	if !permContains(perms.Allow, userAllow) {
+		t.Errorf("user-authored Write() allow rule was pruned\nallow=%v", perms.Allow)
+	}
+	if !permContains(perms.Deny, userDeny) {
+		t.Errorf("user-authored Write() deny rule was pruned\ndeny=%v", perms.Deny)
+	}
+	if permContains(perms.Allow, managedAllow) {
+		t.Errorf("this generator's own legacy Write() rule must be pruned\nallow=%v", perms.Allow)
+	}
+	if permContains(perms.Deny, managedDeny) {
+		t.Errorf("this generator's own legacy Write() rule must be pruned\ndeny=%v", perms.Deny)
+	}
+}
+
+// TestConductorClaudeSettings_DisabledBypassKeepsPolicy pins that a config which
+// names bypassPermissions but also disables it is NOT treated as a bypass:
+// Claude Code refuses to honor that defaultMode, so pruning the managed ask/deny
+// policy on the strength of it would drop real protection.
+func TestConductorClaudeSettings_DisabledBypassKeepsPolicy(t *testing.T) {
+	dir := t.TempDir()
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	seed := `{"permissions":{"defaultMode":"bypassPermissions",` +
+		`"disableBypassPermissionsMode":"disable"}}`
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(seed), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := writeConductorClaudeSettingsAt(dir); err != nil {
+		t.Fatalf("writeConductorClaudeSettingsAt: %v", err)
+	}
+	perms := loadConductorPerms(t, dir)
+
+	if perms.DisableBypassPermissionsMode != "disable" {
+		t.Fatalf("disableBypassPermissionsMode not preserved: %q", perms.DisableBypassPermissionsMode)
+	}
+	if !permContains(perms.Ask, "Bash(agent-deck session send *)") {
+		t.Errorf("managed ask policy must stay when bypass is disabled\nask=%v", perms.Ask)
+	}
+	if !permContains(perms.Deny, "Edit(//"+dir+"/.claude/**)") {
+		t.Errorf("managed deny policy must stay when bypass is disabled\ndeny=%v", perms.Deny)
 	}
 }

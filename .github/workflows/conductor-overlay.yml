@@ -8,11 +8,15 @@ on:
   pull_request:
     paths:
       - 'conductor/overlay/**'
+      # reapply.sh patches the canonical bridge at an exact anchor, so a stock
+      # bridge change has to re-run the contract test that pins that coupling.
+      - 'internal/session/conductor_bridge.py'
       - '.github/workflows/conductor-overlay.yml'
   push:
     branches: [main]
     paths:
       - 'conductor/overlay/**'
+      - 'internal/session/conductor_bridge.py'
       - '.github/workflows/conductor-overlay.yml'
 
 jobs:
@@ -21,7 +25,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.9', '3.12']
+        # 3.8 is the floor the stock bridge promises; the overlay imports
+        # into that same interpreter, so it must hold the same floor.
+        python-version: ['3.8', '3.9', '3.12']
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -34,3 +40,6 @@ jobs:
       - name: Overlay unit suite
         working-directory: conductor/overlay
         run: python -m unittest tests.test_bridge_local -v
+      - name: Reapply contract against the canonical bridge
+        working-directory: conductor/overlay
+        run: python -m unittest tests.test_reapply_contract -v
