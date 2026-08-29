@@ -28,8 +28,10 @@ AUDIO_EXTENSIONS = {
     "audio/ogg": ".ogg", "audio/opus": ".opus", "audio/mpeg": ".mp3",
     "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/wav": ".wav",
     "audio/x-wav": ".wav", "audio/aac": ".aac", "audio/flac": ".flac",
-    "audio/webm": ".webm", "video/mp4": ".mp4",
+    "audio/webm": ".webm",
 }
+# audio/mp4 covers .m4a voice notes; video/* is deliberately absent so a video
+# is never routed to the audio path and stored in the voice inbox.
 FENCE = "-----BEGIN UNTRUSTED TELEGRAM DATA-----"
 FENCE_END = "-----END UNTRUSTED TELEGRAM DATA-----"
 # Control characters (except tab/newline) are stripped: a caption must not be
