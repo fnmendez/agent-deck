@@ -130,16 +130,26 @@ def capture(ctx, sid: str, profile):
     return split_pane(result.stdout)
 
 
-def baseline_count(ctx, sid: str, profile, message: str) -> int:
-    """Occurrences of the message's needle BEFORE sending.
+def baseline(ctx, sid: str, profile, message: str):
+    """State BEFORE sending: (needle count, was the session already busy).
 
-    A pre-send baseline is what makes a short message ("ok") decidable: the
-    verdict is that the count *grew*, not that the text appears somewhere.
+    A pre-send baseline is what makes a short message ("ok") decidable — the
+    verdict is that the count *grew*, not that the text appears somewhere — and
+    the busy flag is what stops an unrelated turn that was already running from
+    being read as proof that our message started it.
     """
     parsed = capture(ctx, sid, profile)
-    if parsed is None:
-        return 0
-    return count_token(parsed[0], delivery_token(message))
+    count = 0 if parsed is None else count_token(parsed[0], delivery_token(message))
+    try:
+        busy = ctx["get_session_status"](sid, profile=profile) in BUSY_STATUSES
+    except Exception:  # noqa: BLE001 - a status probe must never break a send
+        busy = False
+    return count, busy
+
+
+def baseline_count(ctx, sid: str, profile, message: str) -> int:
+    """Backwards-compatible count-only baseline."""
+    return baseline(ctx, sid, profile, message)[0]
 
 
 def parse_send_result(result):
@@ -157,13 +167,16 @@ def parse_send_result(result):
     return ok, delivery
 
 
-def resolve_truth(ctx, sid: str, profile, message: str, baseline: int):
+def resolve_truth(ctx, sid: str, profile, message: str, baseline, was_busy=None):
     """Decide what actually happened to `message`. Returns (truth, composer).
 
-    Order matters: the composer is checked first because a body still sitting
-    there is the one case that is provably NOT submitted and is the only case a
-    rescue Enter may touch.
+    `baseline` is either the pre-send needle count or the (count, was_busy) pair
+    from `baseline()`. Order matters: the composer is checked first because a
+    body still sitting there is the one case that is provably NOT submitted and
+    the only case a rescue Enter may touch.
     """
+    if isinstance(baseline, tuple):
+        baseline, was_busy = baseline
     parsed = capture(ctx, sid, profile)
     if parsed is None:
         return UNKNOWN, ""
@@ -172,10 +185,15 @@ def resolve_truth(ctx, sid: str, profile, message: str, baseline: int):
         return IN_COMPOSER, composer
     if count_token(output, delivery_token(message)) > baseline:
         return DELIVERED, composer
+    if was_busy:
+        # It was already working before we sent, so a busy status now proves
+        # nothing about our message. Without transcript evidence this is unknown,
+        # never "delivered" — claiming delivery here would be a guess.
+        return UNKNOWN, composer
     status = ctx["get_session_status"](sid, profile=profile)
     if status in BUSY_STATUSES:
-        # The composer is clean and the agent started working: it took the body
-        # even though the transcript has not rendered it yet.
+        # It was idle before and is working now with a clean composer: it took
+        # the body even though the transcript has not rendered it yet.
         return DELIVERED, composer
     return ABSENT, composer
 
@@ -245,7 +263,10 @@ def fresh_reply(ctx, sid: str, profile, message: str, stock_reply: str):
     """
     parsed = capture(ctx, sid, profile)
     if parsed is None:
-        return (stock_reply, "cached") if stock_reply else ("", "none")
+        # Without the pane there is no way to tell a fresh reply from an old
+        # one, and relaying a possibly-stale answer is the failure this exists
+        # to prevent.
+        return "", "none"
     output, _composer = parsed
     pane = pane_reply_after(output, message)
     if reply_is_fresh(stock_reply, pane, output, message):

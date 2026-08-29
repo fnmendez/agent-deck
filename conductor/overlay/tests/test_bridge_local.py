@@ -348,7 +348,8 @@ class ConductorSend(unittest.TestCase):
         self.assertEqual(text, "")
 
     def test_successful_wait_send_returns_the_reply(self):
-        cli = FakeCLI([{"delivery": "submitted", "submitted": True}], [pane()])
+        cli = FakeCLI([{"delivery": "submitted", "submitted": True}],
+                      [pane(), self._answered_pane("reply text")])
         ok, text, still_running = bl.make_send_to_conductor(self._ctx(cli))(
             "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
         self.assertTrue(ok)
@@ -362,6 +363,28 @@ class ConductorSend(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(self.queued, [])
         self.assertEqual(len(cli.sends), 1)
+
+    def test_an_already_busy_session_is_not_read_as_proof_of_delivery(self):
+        """A turn that was running before the send proves nothing about it."""
+        cli = FakeCLI([{"delivery": "typed", "success": False, "_stderr": "unconfirmed"}],
+                      [pane(), pane()])
+        ctx = self._ctx(cli, status="running")
+        ok, _t, still_running = bl.make_send_to_conductor(ctx)(
+            "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
+        self.assertFalse(ok)
+        self.assertTrue(still_running, "unknown must await, never resend")
+        self.assertEqual(len(cli.sends), 1)
+        self.assertEqual(self.queued, [])
+
+    def test_an_unreadable_pane_never_relays_a_cached_reply(self):
+        cli = FakeCLI([{"delivery": "submitted", "submitted": True}], [], pane_rc=1)
+        ctx = self._ctx(cli)
+        ctx["get_session_output"] = lambda s, profile=None: self.STALE
+        ok, text, still_running = bl.make_send_to_conductor(ctx)(
+            "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
+        self.assertFalse(ok)
+        self.assertTrue(still_running)
+        self.assertEqual(text, "")
 
     def test_busy_conductor_is_queued_without_sending(self):
         cli = FakeCLI([], [])
@@ -389,6 +412,26 @@ class ConductorSend(unittest.TestCase):
         self.assertEqual(self.sent[0][-1], "Enter")
 
 
+class TmuxSocket(unittest.TestCase):
+    """The rescue Enter must target the configured socket, never a guess."""
+
+    def test_socket_is_read_from_the_resolved_config(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.toml"
+            cfg.write_text('[tmux]\n  socket_name = "custom-socket"\n')
+            self.assertEqual(bl.tmux_socket_name({"resolve_config_path": lambda n: str(cfg)}),
+                             "custom-socket")
+
+    def test_default_config_path_is_defined_not_a_swallowed_name_error(self):
+        self.assertTrue(str(bl.DEFAULT_CONFIG_PATH).endswith("agent-deck/config.toml"))
+
+    def test_unreadable_config_falls_back_to_the_default_socket(self):
+        self.assertEqual(bl.tmux_socket_name({"resolve_config_path": lambda n: "/nonexistent/x.toml"}),
+                         "agent-deck")
+
+
 class Install(unittest.TestCase):
     def test_rebinds_the_module_global(self):
         ctx = ctx_with(FakeCLI([], []))
@@ -412,6 +455,10 @@ class Handlers(unittest.TestCase):
             class message:
                 @staticmethod
                 def register(fn, cmd): handlers[fn.__name__] = fn
+
+            class callback_query:      # present whenever aiogram is installed
+                @staticmethod
+                def register(fn, flt): handlers[fn.__name__] = fn
         bl.Command = lambda *names: names
         ctx = ctx_with(cli or FakeCLI([{"delivery": "submitted", "submitted": True}], [pane(), pane()]))
         if boom:

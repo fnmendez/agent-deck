@@ -108,7 +108,12 @@ class single_flight:
             if self._holder_alive():
                 raise JobRejected("another transcription job is already running")
             self.lock_path.unlink(missing_ok=True)
-            self.fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                self.fd = os.open(str(self.lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                # Another job reclaimed the same stale lock first. Losing that
+                # race is a refusal, not a crash - and never a second engine.
+                raise JobRejected("another transcription job claimed the lock first")
         os.write(self.fd, ("%d\n" % os.getpid()).encode())
         return self
 

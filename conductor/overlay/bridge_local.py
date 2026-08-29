@@ -44,7 +44,7 @@ from delivery import (  # shared truth resolution (same dir, added by the hook t
     DELIVERED,
     IN_COMPOSER,
     UNKNOWN,
-    baseline_count,
+    baseline,
     capture,
     composer_is_ours,
     delivery_token,
@@ -63,6 +63,9 @@ STATUS_ICON = {
 TG_LIMIT = 4096
 PEEK_BUDGET = 3800
 SEND_USAGE = "Usage: /send <session|group:session|\"title with spaces\"> <message>"
+# Only used when the bridge does not expose its own XDG-aware resolver; the
+# rescue Enter must never guess a tmux socket from a NameError fallback.
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "agent-deck" / "config.toml"
 
 
 def active_sessions(ctx) -> list[tuple[str, dict]]:
@@ -138,16 +141,28 @@ def format_agents(sessions: list[tuple[str, dict]], multi_profile: bool, only_gr
     return "\n".join(lines)
 
 
+SOCKET_RE = re.compile(r"^\s*socket_name\s*=\s*[\"']([^\"']+)[\"']", re.MULTILINE)
+
+
 def tmux_socket_name(ctx) -> str:
-    """Socket from agent-deck config, resolved via the bridge's own XDG-aware
-    resolver when available (stable: it is the bridge that reads the same file)."""
+    """The configured agent-deck tmux socket, or the documented default.
+
+    Resolved through the bridge's own XDG-aware resolver when it exposes one.
+    The file is parsed with `toml` when available and with a narrow regex
+    otherwise: a missing parser must not silently send the rescue Enter to a
+    different tmux server than the one the sessions live on.
+    """
     try:
-        import toml
         resolver = ctx.get("resolve_config_path") if isinstance(ctx, dict) else None
         path = resolver("config.toml") if callable(resolver) else DEFAULT_CONFIG_PATH
-        cfg = toml.load(path)
-        return str(cfg.get("tmux", {}).get("socket_name") or "agent-deck")
-    except Exception:
+        try:
+            import toml
+            value = toml.load(str(path)).get("tmux", {}).get("socket_name")
+        except ImportError:
+            match = SOCKET_RE.search(Path(path).read_text(encoding="utf-8"))
+            value = match.group(1) if match else None
+        return str(value) if value else "agent-deck"
+    except Exception:  # noqa: BLE001 - an unreadable config is not fatal
         return "agent-deck"
 
 
@@ -212,7 +227,7 @@ def send_with_truth(ctx, profile, sess: dict, message: str, extra_args=()):
     sid = sess.get("id") or sess.get("title")
     title = sess.get("title")
 
-    base = baseline_count(ctx, sid, profile, message)
+    base = baseline(ctx, sid, profile, message)
     # Flags first, then "--": message text can never be parsed as a CLI option.
     args = ["session", "send", "--no-wait", "--json", "--timeout", "30s"]
     args.extend(extra_args)
@@ -435,7 +450,7 @@ def make_send_to_conductor(ctx):
                 enqueue(session, message, profile, reply_callback)
                 return True, "", False
             sess = _session(session, profile)
-            base = baseline_count(ctx, sess.get("id") or session, profile, message)
+            base = baseline(ctx, sess.get("id") or session, profile, message)
             result = run_cli(
                 "session", "send", "--no-wait", "--json", "--timeout", "30s",
                 "--", sess.get("id") or session, message,
@@ -470,7 +485,7 @@ def make_send_to_conductor(ctx):
         # Blocking path: heartbeats and the idle user-message flow.
         sess = _session(session, profile)
         sid = sess.get("id") or session
-        base = baseline_count(ctx, sid, profile, message)
+        base = baseline(ctx, sid, profile, message)
         result = run_cli(
             "session", "send", "--wait", "--timeout", "%ss" % response_timeout, "-q",
             "--", sid, message,
@@ -713,6 +728,12 @@ def register(dp, ctx: dict, is_authorized) -> None:
             log.exception("overlay: audio download failed")
             await message.answer("⚠️ could not download that audio: %s" % exc.__class__.__name__)
             return
+        if target.stat().st_size > media.MAX_AUDIO_BYTES:
+            # Telegram omits file_size for some voice notes, so the declared
+            # bound is re-checked against what actually landed on disk.
+            target.unlink(missing_ok=True)
+            await message.answer("⚠️ that audio is over the size limit for this bridge")
+            return
         try:
             transcript = await _in_thread(
                 functools.partial(
@@ -776,7 +797,9 @@ def register(dp, ctx: dict, is_authorized) -> None:
     if F is not None:
         # Media handlers must precede the stock catch-all, which drops every
         # non-text message with `if not message.text: return`.
-        dp.message.register(on_audio, F.voice | F.audio)
+        dp.message.register(
+            on_audio, F.voice | F.audio | F.document.mime_type.startswith("audio/")
+        )
         dp.message.register(on_photo, F.photo | F.document)
         dp.callback_query.register(on_peek_refresh, F.data.startswith("pk:"))
     install_conductor_send(ctx)
