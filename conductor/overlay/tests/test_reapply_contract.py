@@ -90,9 +90,15 @@ class TrackedModulesTest(unittest.TestCase):
 
 class ReapplyContractTest(unittest.TestCase):
     def setUp(self):
-        self.assertTrue(
-            CANONICAL_BRIDGE.is_file(), "canonical bridge missing: %s" % CANONICAL_BRIDGE
-        )
+        if not CANONICAL_BRIDGE.is_file():
+            # The deployed overlay has no repository beside it, so this contract
+            # simply does not apply there. It is a skip, not a failure — but only
+            # ever when the file is genuinely absent, so CI (where the repo is
+            # present) still runs every case.
+            raise unittest.SkipTest(
+                "no canonical bridge at %s — this suite pins the repository "
+                "contract and only applies inside a checkout" % CANONICAL_BRIDGE
+            )
         self.source = CANONICAL_BRIDGE.read_text(encoding="utf-8")
 
     def test_anchor_appears_exactly_once(self):
