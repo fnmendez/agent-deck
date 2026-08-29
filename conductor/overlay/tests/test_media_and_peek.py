@@ -116,6 +116,19 @@ class Bounds(unittest.TestCase):
         self.assertFalse(media.looks_like_audio("application/pdf", "a.mp3"))
         self.assertTrue(media.looks_like_audio("", "voice.ogg"))
 
+    def test_video_is_not_treated_as_audio(self):
+        self.assertFalse(media.looks_like_audio("video/mp4", "clip.mp4"))
+        self.assertFalse(media.looks_like_audio("", "clip.mp4"))
+        self.assertTrue(media.looks_like_audio("audio/mp4", "nota.m4a"))
+
+    def test_a_video_document_is_rejected_by_both_paths(self):
+        msg = SimpleNamespace(photo=None, voice=None, audio=None,
+                              document=SimpleNamespace(mime_type="video/mp4", file_name="clip.mp4", file_size=9))
+        with self.assertRaises(media.MediaRejected):
+            bl.pick_audio(msg)
+        with self.assertRaises(media.MediaRejected):
+            bl.pick_image(msg)
+
     def test_pick_audio_rejects_a_text_message(self):
         with self.assertRaises(media.MediaRejected):
             bl.pick_audio(SimpleNamespace(voice=None, audio=None, document=None))
