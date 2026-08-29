@@ -91,6 +91,19 @@ class Bounds(unittest.TestCase):
         _o, mime, _n, size, meta = bl.pick_audio(msg)
         self.assertEqual((mime, size, meta["duration"]), ("audio/ogg", 5, 3))
 
+    def test_pick_audio_accepts_an_audio_document(self):
+        """A voice note forwarded as a file is still audio."""
+        msg = SimpleNamespace(voice=None, audio=None,
+                              document=SimpleNamespace(mime_type="audio/mpeg", file_name="note.mp3", file_size=9))
+        _o, mime, name, size, _m = bl.pick_audio(msg)
+        self.assertEqual((mime, name, size), ("audio/mpeg", "note.mp3", 9))
+
+    def test_audio_extension_never_comes_from_a_hostile_name(self):
+        self.assertEqual(
+            media.safe_extension("audio/ogg", "../../evil.command", media.AUDIO_EXTENSIONS, ".ogg"),
+            ".ogg",
+        )
+
     def test_pick_audio_rejects_a_text_message(self):
         with self.assertRaises(media.MediaRejected):
             bl.pick_audio(SimpleNamespace(voice=None, audio=None, document=None))

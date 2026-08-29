@@ -660,8 +660,17 @@ def register(dp, ctx: dict, is_authorized) -> None:
             return "→ handed to %s" % title
         return "⚠️ could not hand it to %s — it is saved on disk" % title
 
+    def _is_audio_document(message) -> bool:
+        doc = getattr(message, "document", None)
+        mime = (getattr(doc, "mime_type", "") or "").lower() if doc is not None else ""
+        return mime.startswith("audio/") or mime in media.AUDIO_EXTENSIONS
+
     async def on_photo(message):
         if not is_authorized(message):
+            return
+        if _is_audio_document(message):
+            # A voice note forwarded as a file still belongs to the audio path.
+            await on_audio(message)
             return
         try:
             file_obj, mime, name, size, meta = pick_image(message)
@@ -751,6 +760,8 @@ def register(dp, ctx: dict, is_authorized) -> None:
             )
         except Exception as exc:  # noqa: BLE001 - "message is not modified" et al.
             log.info("overlay: peek refresh edit skipped: %s", exc.__class__.__name__)
+            await callback.answer("no change since the last snapshot")
+            return
         await callback.answer("refreshed")
 
     # Build the full list first, then register: all-or-nothing.
