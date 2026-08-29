@@ -9,6 +9,9 @@ set -euo pipefail
 DATA="${AGENT_DECK_DATA_DIR:-$HOME/.local/share/agent-deck}"
 CDIR="$DATA/conductor"; OVERLAY="$CDIR/overlay"; BRIDGE="$CDIR/bridge.py"
 MODULE="$OVERLAY/bridge_local.py"; APPLIED="$OVERLAY/.applied-sha"
+# Every module the bridge imports, not just the entry point: a change in any of
+# them must restart the bridge, or it keeps serving the code already in memory.
+MODULES="bridge_local.py delivery.py media.py transcribe.py"
 VENV_PY="$DATA/bridge-venv/bin/python"
 PLIST="$HOME/Library/LaunchAgents/com.agentdeck.conductor-bridge.plist"
 LABEL="com.agentdeck.conductor-bridge"; LOG="$CDIR/bridge.log"
@@ -23,10 +26,12 @@ CHANGED=0; PLIST_CHANGED=0
 [ -f "$BRIDGE" ] || fail "$BRIDGE missing"
 [ -x "$VENV_PY" ] || fail "bridge venv python missing: $VENV_PY"
 [ -f "$PLIST" ] || fail "LaunchAgent plist missing: $PLIST"
-[ -f "$MODULE" ] || fail "overlay module missing: $MODULE"
-"$VENV_PY" -m py_compile "$MODULE" || fail "bridge_local.py does not compile"
+for module in $MODULES; do
+  [ -f "$OVERLAY/$module" ] || fail "overlay module missing: $OVERLAY/$module"
+  "$VENV_PY" -m py_compile "$OVERLAY/$module" || fail "$module does not compile"
+done
 "$VENV_PY" -c "import sys; sys.path.insert(0, '$OVERLAY'); import bridge_local" || fail "bridge_local.py does not import under the bridge venv"
-MODULE_SHA="$(shasum -a 256 "$MODULE" | cut -d' ' -f1)"
+MODULE_SHA="$(cd "$OVERLAY" && shasum -a 256 $MODULES | shasum -a 256 | cut -d' ' -f1)"
 
 pid_of() { launchctl list | awk -v l="$LABEL" '$3==l{print $1}'; }
 
@@ -108,9 +113,9 @@ PYEOF
   CHANGED=1
 fi
 
-# ---- 1b. overlay module changed since last applied? ----------------------
+# ---- 1b. any overlay module changed since last applied? ------------------
 if [ "$(cat "$APPLIED" 2>/dev/null || true)" != "$MODULE_SHA" ]; then
-  say "[$([ "$DRY" = 1 ] && echo dry || echo ok)] bridge_local.py changed since last apply -> restart needed"
+  say "[$([ "$DRY" = 1 ] && echo dry || echo ok)] overlay modules changed since last apply -> restart needed"
   CHANGED=1
 fi
 

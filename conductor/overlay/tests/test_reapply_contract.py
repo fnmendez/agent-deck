@@ -53,6 +53,41 @@ def hook() -> str:
     return _extract(r"hook = '''(.*?)'''", "hook body")
 
 
+class TrackedModulesTest(unittest.TestCase):
+    """reapply.sh must restart on a change to ANY module the bridge imports.
+
+    It used to hash only bridge_local.py, so editing delivery.py deployed the
+    file and left the bridge serving the code already in memory - a silent
+    no-op deploy.
+    """
+
+    def tracked(self):
+        match = re.search(r'^MODULES="([^"]+)"', _script(), re.MULTILINE)
+        self.assertIsNotNone(match, "reapply.sh no longer declares MODULES")
+        return set(match.group(1).split())
+
+    def imported_by_overlay(self):
+        """Local modules bridge_local.py imports from the overlay directory."""
+        source = (OVERLAY_DIR / "bridge_local.py").read_text(encoding="utf-8")
+        local = {p.stem for p in OVERLAY_DIR.glob("*.py")}
+        found = {"bridge_local.py"}
+        for name in re.findall(r"^(?:import|from)\s+([a-z_][a-z0-9_]*)", source, re.MULTILINE):
+            if name in local:
+                found.add(name + ".py")
+        return found
+
+    def test_every_imported_module_is_tracked(self):
+        missing = self.imported_by_overlay() - self.tracked()
+        self.assertFalse(
+            missing,
+            "reapply.sh would not restart the bridge for a change in %s" % sorted(missing),
+        )
+
+    def test_tracked_modules_all_exist(self):
+        for module in self.tracked():
+            self.assertTrue((OVERLAY_DIR / module).is_file(), "%s is tracked but missing" % module)
+
+
 class ReapplyContractTest(unittest.TestCase):
     def setUp(self):
         self.assertTrue(
