@@ -48,6 +48,7 @@ from delivery import (  # shared truth resolution (same dir, added by the hook t
     capture,
     composer_is_ours,
     delivery_token,
+    fresh_reply,
     norm,
     parse_send_result,
     resolve_truth,
@@ -476,7 +477,19 @@ def make_send_to_conductor(ctx):
             profile=profile, timeout=max(response_timeout + 30, 60),
         )
         if result.returncode == 0:
-            return True, ctx["get_session_output"](session, profile=profile), False
+            stock = ctx["get_session_output"](session, profile=profile)
+            text, source = fresh_reply(ctx, sid, profile, message, stock)
+            if source == "none":
+                # A stale answer reads as the conductor ignoring the question and
+                # replying to something else. Await the real one instead.
+                log.info(
+                    "Conductor %s: no reply newer than the message yet; awaiting it "
+                    "rather than returning a stale one", session,
+                )
+                return False, "", True
+            if source == "pane":
+                log.info("Conductor %s: cached reply was stale, using the pane reply", session)
+            return True, text, False
 
         stderr = (result.stderr or "").strip()
         if ctx["_is_still_running_timeout"](stderr):
