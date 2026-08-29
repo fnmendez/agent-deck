@@ -156,6 +156,29 @@ class Truth(unittest.TestCase):
         truth, _ = dl.resolve_truth(ctx_with(cli, status="running"), "id", "operator", self.MSG, 0)
         self.assertEqual(truth, dl.DELIVERED)
 
+    def test_a_failed_pre_send_status_probe_is_unknown_not_idle(self):
+        """A probe that raises must not be recorded as "the session was idle"."""
+        cli = FakeCLI([], [pane()])
+        ctx = ctx_with(cli)
+        def boom(sid, profile=None):
+            raise RuntimeError("cli unavailable")
+        ctx["get_session_status"] = boom
+        count, busy = dl.baseline(ctx, "id", "operator", self.MSG)
+        self.assertEqual(count, 0)
+        self.assertIsNone(busy, "an unreadable status must be unknown, not False")
+
+    def test_busy_after_an_unknown_pre_send_state_is_not_delivery(self):
+        cli = FakeCLI([], [pane()])
+        truth, _ = dl.resolve_truth(ctx_with(cli, status="running"), "id", "operator",
+                                    self.MSG, baseline=(0, None))
+        self.assertEqual(truth, dl.UNKNOWN)
+
+    def test_busy_after_a_known_idle_state_is_delivery(self):
+        cli = FakeCLI([], [pane()])
+        truth, _ = dl.resolve_truth(ctx_with(cli, status="running"), "id", "operator",
+                                    self.MSG, baseline=(0, False))
+        self.assertEqual(truth, dl.DELIVERED)
+
     def test_unreadable_screen_is_unknown_not_absent(self):
         cli = FakeCLI([], [], pane_rc=1)
         truth, _ = dl.resolve_truth(ctx_with(cli), "id", "operator", self.MSG, 0)

@@ -143,7 +143,9 @@ def baseline(ctx, sid: str, profile, message: str):
     try:
         busy = ctx["get_session_status"](sid, profile=profile) in BUSY_STATUSES
     except Exception:  # noqa: BLE001 - a status probe must never break a send
-        busy = False
+        # Unknown, not idle: assuming idle here would let a post-send busy
+        # status stand in as proof of delivery for a send that never landed.
+        busy = None
     return count, busy
 
 
@@ -167,7 +169,7 @@ def parse_send_result(result):
     return ok, delivery
 
 
-def resolve_truth(ctx, sid: str, profile, message: str, baseline, was_busy=None):
+def resolve_truth(ctx, sid: str, profile, message: str, baseline, was_busy=False):
     """Decide what actually happened to `message`. Returns (truth, composer).
 
     `baseline` is either the pre-send needle count or the (count, was_busy) pair
@@ -185,15 +187,16 @@ def resolve_truth(ctx, sid: str, profile, message: str, baseline, was_busy=None)
         return IN_COMPOSER, composer
     if count_token(output, delivery_token(message)) > baseline:
         return DELIVERED, composer
-    if was_busy:
-        # It was already working before we sent, so a busy status now proves
-        # nothing about our message. Without transcript evidence this is unknown,
-        # never "delivered" — claiming delivery here would be a guess.
+    if was_busy is not False:
+        # Either it was already working before we sent, or the pre-send probe
+        # failed and we cannot say. Both make a busy status now worthless as
+        # evidence about *our* message, and a guess here would report a lost
+        # message as delivered.
         return UNKNOWN, composer
     status = ctx["get_session_status"](sid, profile=profile)
     if status in BUSY_STATUSES:
-        # It was idle before and is working now with a clean composer: it took
-        # the body even though the transcript has not rendered it yet.
+        # It was positively idle before and is working now with a clean
+        # composer: it took the body, the transcript just has not rendered it.
         return DELIVERED, composer
     return ABSENT, composer
 

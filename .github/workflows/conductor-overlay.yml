@@ -38,6 +38,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Compile-check
+        timeout-minutes: 3
         run: |
           python -m py_compile conductor/overlay/bridge_local.py \
                                conductor/overlay/delivery.py \
@@ -45,16 +46,20 @@ jobs:
                                conductor/overlay/transcribe.py \
                                conductor/overlay/canary_isolation.py
       - name: Shell syntax check
+        timeout-minutes: 2
         run: bash -n conductor/overlay/reapply.sh
       - name: Overlay unit suite
+        timeout-minutes: 5
         working-directory: conductor/overlay
         run: python -m unittest tests.test_bridge_local tests.test_media_and_peek -v
       # Isolation guarantees for transcription jobs: no GUI/clipboard/paste entry
       # point, private state, single-flight, and no surviving descendants. These
       # spawn real processes, so they must run on a real runner rather than be mocked.
       - name: Transcription isolation suite
+        timeout-minutes: 8
         working-directory: conductor/overlay
         run: python -m unittest tests.test_transcribe_isolation -v
       - name: Reapply contract against the canonical bridge
+        timeout-minutes: 3
         working-directory: conductor/overlay
         run: python -m unittest tests.test_reapply_contract -v
