@@ -302,6 +302,51 @@ class ConductorSend(unittest.TestCase):
         self.assertEqual(len(cli.sends), 1)
         self.assertEqual(self.queued, [])
 
+    STALE = "[STATUS] All clear; 0 auto-responses. No session moved since 01:17"
+
+    def _answered_pane(self, answer):
+        """A pane where our message was echoed and then answered."""
+        return (
+            "  earlier turn\n\n✻ Crunched for 1m · done 5:09 AM\n\n"
+            "❯ %s\n\n⏺ %s\n\n✻ Cogitated for 2s · done 5:12 AM\n"
+            "%s\n❯ \n%s\n  status\n" % (self.MSG, answer, "-" * 40, "-" * 40)
+        )
+
+    def test_a_stale_cached_reply_is_never_returned(self):
+        """The live defect: session output --json served an older heartbeat."""
+        cli = FakeCLI([{"delivery": "submitted", "submitted": True}],
+                      [pane(), self._answered_pane("OK probe")])
+        ctx = self._ctx(cli)
+        ctx["get_session_output"] = lambda s, profile=None: self.STALE
+        ok, text, still_running = bl.make_send_to_conductor(ctx)(
+            "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
+        self.assertTrue(ok)
+        self.assertEqual(text, "OK probe")
+        self.assertNotIn("[STATUS]", text)
+
+    def test_a_fresh_cached_reply_is_preferred_in_full(self):
+        """When the cache is current it wins: the pane may have truncated it."""
+        full = "OK probe — and here is a much longer answer than the pane holds"
+        cli = FakeCLI([{"delivery": "submitted", "submitted": True}],
+                      [pane(), self._answered_pane(full)])
+        ctx = self._ctx(cli)
+        ctx["get_session_output"] = lambda s, profile=None: full
+        ok, text, _s = bl.make_send_to_conductor(ctx)(
+            "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
+        self.assertTrue(ok)
+        self.assertEqual(text, full)
+
+    def test_no_reply_yet_awaits_instead_of_answering_something_else(self):
+        cli = FakeCLI([{"delivery": "submitted", "submitted": True}],
+                      [pane(), pane(transcript="❯ %s" % self.MSG)])
+        ctx = self._ctx(cli)
+        ctx["get_session_output"] = lambda s, profile=None: self.STALE
+        ok, text, still_running = bl.make_send_to_conductor(ctx)(
+            "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
+        self.assertFalse(ok)
+        self.assertTrue(still_running)
+        self.assertEqual(text, "")
+
     def test_successful_wait_send_returns_the_reply(self):
         cli = FakeCLI([{"delivery": "submitted", "submitted": True}], [pane()])
         ok, text, still_running = bl.make_send_to_conductor(self._ctx(cli))(

@@ -178,3 +178,78 @@ def resolve_truth(ctx, sid: str, profile, message: str, baseline: int):
         # even though the transcript has not rendered it yet.
         return DELIVERED, composer
     return ABSENT, composer
+
+
+# --------------------------------------------------------------- reply freshness
+# Lines the agents draw around a turn: spinners, timers, tool markers. They are
+# chrome, not the answer.
+CHROME_RE = re.compile(r"^\s*(?:[✻✳✽·⎿⏺•]|\[STATUS\]\s*$|Working\b|Esc to interrupt)")
+STATUS_TAIL_RE = re.compile(r"^\s*(?:[✻✳✽]\s|.*·\s*done\s|\s*$)")
+FRESHNESS_PROBE = 40
+
+
+def pane_reply_after(output_lines, message: str) -> str:
+    """Whatever the agent printed after our message appeared in the transcript.
+
+    The pane is the only place that shows ordering, so it is what tells a fresh
+    answer from an older one that a stale cache may still be serving.
+    """
+    token = delivery_token(message)
+    if not token:
+        return ""
+    index = None
+    for position, line in enumerate(output_lines):
+        if token in norm(line):
+            index = position
+    if index is None:
+        return ""
+    reply = []
+    for line in output_lines[index + 1:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if STATUS_TAIL_RE.match(line) and reply:
+            break                      # the turn's closing timer ends the answer
+        if CHROME_RE.match(line):
+            cleaned = re.sub(r"^\s*[⎿⏺•]\s*", "", line).strip()
+            if cleaned and not STATUS_TAIL_RE.match(line):
+                reply.append(cleaned)
+            continue
+        reply.append(stripped)
+    return "\n".join(reply).strip()
+
+
+def reply_is_fresh(stock_reply: str, pane_reply: str, output_lines, message: str) -> bool:
+    """True when the cached reply really belongs to the turn we just triggered."""
+    if not stock_reply:
+        return False
+    probe = norm(stock_reply)[:FRESHNESS_PROBE]
+    if not probe:
+        return False
+    if pane_reply and probe in norm(pane_reply):
+        return True
+    # The answer may have scrolled past the top of the pane; accept the cached
+    # reply only when it appears after our own message, never before it.
+    joined = norm("\n".join(output_lines))
+    token = delivery_token(message)
+    if not token or token not in joined:
+        return False
+    return probe in joined.split(token)[-1]
+
+
+def fresh_reply(ctx, sid: str, profile, message: str, stock_reply: str):
+    """(reply_text, source). Never returns a reply that predates `message`.
+
+    A stale answer is worse than an honest gap: it reads as the conductor
+    ignoring what was asked and answering something else entirely.
+    """
+    parsed = capture(ctx, sid, profile)
+    if parsed is None:
+        return (stock_reply, "cached") if stock_reply else ("", "none")
+    output, _composer = parsed
+    pane = pane_reply_after(output, message)
+    if reply_is_fresh(stock_reply, pane, output, message):
+        return stock_reply, "cached"
+    if pane:
+        return pane, "pane"
+    return "", "none"
