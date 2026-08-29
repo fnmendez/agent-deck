@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import bridge_local as bl  # noqa: E402
+import delivery as dl  # noqa: E402
 
 S = lambda title, group, status="idle", tool="claude", archived=False, id=None: {  # noqa: E731
     "title": title, "group": group, "status": status, "tool": tool,
@@ -80,59 +81,282 @@ class Pane(unittest.TestCase):
 
 
 class FakeCLI:
-    def __init__(self, send_json, panes, pane_rc=0): self.send_json, self.panes, self.pane_rc, self.calls = send_json, list(panes), pane_rc, []
+    """Serves `session output --pane` from a queue and records every call."""
+
+    def __init__(self, send_results, panes, pane_rc=0):
+        self.send_results = list(send_results)
+        self.panes = list(panes)
+        self.pane_rc = pane_rc
+        self.calls = []
+
+    @property
+    def sends(self):
+        return [c for c in self.calls if c[:2] == ("session", "send")]
+
     def __call__(self, *args, profile=None, timeout=0):
         self.calls.append(args)
         if args[:2] == ("session", "send"):
-            return subprocess.CompletedProcess(args, 0, json.dumps(self.send_json), "")
-        return subprocess.CompletedProcess(args, self.pane_rc, self.panes.pop(0) if self.panes else "", "")
+            payload = self.send_results.pop(0) if self.send_results else {}
+            rc = 0 if payload.get("delivery") == "submitted" else 1
+            return subprocess.CompletedProcess(args, rc, json.dumps(payload), payload.pop("_stderr", ""))
+        pane = self.panes.pop(0) if self.panes else ""
+        return subprocess.CompletedProcess(args, self.pane_rc, pane, "")
 
 
-def ctx_with(cli):
-    return {"run_cli": cli, "log": logging.getLogger("t"), "get_unique_profiles": lambda: ["operator"],
-            "get_sessions_list_all": lambda p: SESS, "get_default_conductor": lambda: {"name": "slavna"},
-            "conductor_session_title": lambda n: f"conductor-{n}", "split_message": lambda t: [t],
-            "get_conductor_names": lambda: ["slavna"], "resolve_config_path": lambda n: "/nonexistent/" + n}
+def pane(transcript="", composer=""):
+    return "%s\n%s\n❯ %s\n%s\n  status\n" % (transcript, "-" * 40, composer, "-" * 40)
+
+
+def ctx_with(cli, status="idle"):
+    return {
+        "run_cli": cli,
+        "log": logging.getLogger("t"),
+        "get_unique_profiles": lambda: ["operator"],
+        "get_sessions_list_all": lambda p: SESS,
+        "get_default_conductor": lambda: {"name": "slavna"},
+        "conductor_session_title": lambda n: "conductor-%s" % n,
+        "split_message": lambda t: [t],
+        "get_conductor_names": lambda: ["slavna"],
+        "resolve_config_path": lambda n: "/nonexistent/" + n,
+        "get_session_status": lambda s, profile=None: status,
+    }
+
+
+class Truth(unittest.TestCase):
+    """delivery.resolve_truth: what actually happened to the body."""
+
+    MSG = "overlay truth probe uno dos tres cuatro cinco seis siete ocho"
+
+    def test_token_survives_pane_wrapping(self):
+        token = dl.delivery_token(self.MSG)
+        wrapped = "  overlay truth probe uno dos tres\n  cuatro cinco seis siete ocho"
+        self.assertIn(token, dl.norm(wrapped))
+
+    def test_token_prefers_the_longest_line(self):
+        self.assertTrue(dl.delivery_token("hola\n" + self.MSG).startswith("overlay truth"))
+
+    def test_delivered_when_transcript_count_grows(self):
+        cli = FakeCLI([], [pane(transcript=self.MSG)])
+        truth, _ = dl.resolve_truth(ctx_with(cli), "id", "operator", self.MSG, baseline=0)
+        self.assertEqual(truth, dl.DELIVERED)
+
+    def test_not_delivered_when_the_text_was_already_there(self):
+        """A repeated body is decided by growth, not by mere presence."""
+        cli = FakeCLI([], [pane(transcript=self.MSG)])
+        truth, _ = dl.resolve_truth(ctx_with(cli), "id", "operator", self.MSG, baseline=1)
+        self.assertEqual(truth, dl.ABSENT)
+
+    def test_composer_beats_transcript(self):
+        cli = FakeCLI([], [pane(transcript=self.MSG, composer=self.MSG)])
+        truth, _ = dl.resolve_truth(ctx_with(cli), "id", "operator", self.MSG, baseline=0)
+        self.assertEqual(truth, dl.IN_COMPOSER)
+
+    def test_busy_session_with_clean_composer_counts_as_delivered(self):
+        cli = FakeCLI([], [pane()])
+        truth, _ = dl.resolve_truth(ctx_with(cli, status="running"), "id", "operator", self.MSG, 0)
+        self.assertEqual(truth, dl.DELIVERED)
+
+    def test_unreadable_screen_is_unknown_not_absent(self):
+        cli = FakeCLI([], [], pane_rc=1)
+        truth, _ = dl.resolve_truth(ctx_with(cli), "id", "operator", self.MSG, 0)
+        self.assertEqual(truth, dl.UNKNOWN)
+
+    def test_unparseable_screen_is_unknown(self):
+        cli = FakeCLI([], ["bash-5.2$ operator draft\n"])
+        truth, _ = dl.resolve_truth(ctx_with(cli), "id", "operator", self.MSG, 0)
+        self.assertEqual(truth, dl.UNKNOWN)
+
+    def test_parse_send_result_trusts_submitted_flag(self):
+        ok, delivery = dl.parse_send_result(
+            subprocess.CompletedProcess([], 1, json.dumps({"success": False, "submitted": True, "delivery": "submitted"}), "")
+        )
+        self.assertTrue(ok)
+        self.assertEqual(delivery, "submitted")
 
 
 class Send(unittest.TestCase):
+    """do_send: report the truth, never resend."""
+
+    MSG = LONG
+
     def setUp(self):
         self.sent = []
-        self._sub, self._time = bl.subprocess, bl.time
-        bl.subprocess = SimpleNamespace(run=lambda cmd, **k: (self.sent.append(cmd), SimpleNamespace(returncode=0))[1],
-                                        SubprocessError=subprocess.SubprocessError)
-        bl.time = SimpleNamespace(sleep=lambda s: None)
+        self._sub = bl.subprocess
+        bl.subprocess = SimpleNamespace(
+            run=lambda cmd, **k: (self.sent.append(cmd), SimpleNamespace(returncode=0, stderr=""))[1],
+            SubprocessError=subprocess.SubprocessError,
+        )
+
     def tearDown(self):
-        bl.subprocess, bl.time = self._sub, self._time
-    def test_submitted_uses_dash_separator(self):
-        cli = FakeCLI({"success": True, "delivery": "submitted"}, [])
+        bl.subprocess = self._sub
+
+    def test_submitted_is_a_single_send_with_separator(self):
+        cli = FakeCLI([{"delivery": "submitted", "submitted": True}], [pane()])
         r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), "--message-file /etc/hosts hi")
-        self.assertTrue(r.startswith("✅")); a = cli.calls[0]
-        self.assertEqual(a[a.index("--") + 1:], ("id-ops-main", "--message-file /etc/hosts hi")); self.assertLess(a.index("--no-wait"), a.index("--"))
-    def test_foreign_composer_not_touched_and_not_echoed(self):
-        cli = FakeCLI({"success": True, "delivery": "typed_not_submitted"}, ["x\n❯ ready and merge #33\n"])
-        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), "overlay-test")
-        self.assertTrue(r.startswith("⚠️")); self.assertNotIn("merge #33", r); self.assertEqual(self.sent, [])
-    def test_rescue_enter_recaptures_first(self):
-        cli = FakeCLI({"success": True, "delivery": "typed_not_submitted"}, [f"x\n❯ {LONG}\n", f"x\n❯ {LONG}\n", "x\n❯ \n"])
-        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), LONG)
-        self.assertTrue(r.startswith("✅")); self.assertIn("rescue", r)
-        self.assertEqual(self.sent[0][-1], "Enter"); self.assertEqual(self.sent[0][-2], "tmux-ops-main")
-        self.assertEqual(sum(1 for c in cli.calls if "output" in c), 3)
-    def test_rescue_aborts_if_composer_changed(self):
-        cli = FakeCLI({"success": True, "delivery": "typed_not_submitted"}, [f"x\n❯ {LONG}\n", "x\n❯ operator typing now\n"])
-        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), LONG)
-        self.assertIn("changed before rescue", r); self.assertEqual(self.sent, [])
-    def test_unverified_is_not_green(self):
-        cli = FakeCLI({"success": True, "delivery": "unverified"}, ["x\n❯ \n"])
-        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), "hi"); self.assertTrue(r.startswith("⚠️")); self.assertIn("unverified", r)
-    def test_capture_failure_after_send(self):
-        cli = FakeCLI({"success": True, "delivery": "unverified"}, [], pane_rc=1)
-        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), "hi"); self.assertTrue(r.startswith("⚠️")); self.assertEqual(self.sent, [])
-    def test_tmux_failure_reported(self):
-        bl.subprocess = SimpleNamespace(run=lambda cmd, **k: SimpleNamespace(returncode=1), SubprocessError=subprocess.SubprocessError)
-        cli = FakeCLI({"success": True, "delivery": "typed_not_submitted"}, [f"x\n❯ {LONG}\n", f"x\n❯ {LONG}\n"])
-        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), LONG); self.assertIn("rescue Enter failed", r)
+        self.assertTrue(r.startswith("✅"))
+        self.assertEqual(len(cli.sends), 1)
+        args = cli.sends[0]
+        self.assertEqual(args[args.index("--") + 1:], ("id-ops-main", "--message-file /etc/hosts hi"))
+        self.assertLess(args.index("--no-wait"), args.index("--"))
+
+    def test_ambiguous_but_arrived_is_reported_delivered_without_resending(self):
+        cli = FakeCLI([{"delivery": "typed", "success": False}], [pane(), pane(transcript=self.MSG)])
+        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), self.MSG)
+        self.assertTrue(r.startswith("✅"))
+        self.assertIn("could not confirm", r)
+        self.assertEqual(len(cli.sends), 1, "an ambiguous verdict must never trigger a second send")
+        self.assertEqual(self.sent, [], "a delivered message must not get a rescue Enter")
+
+    def test_in_composer_is_rescued(self):
+        cli = FakeCLI([{"delivery": "typed", "success": False}],
+                      [pane(), pane(composer=self.MSG), pane(composer=self.MSG)])
+        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), self.MSG)
+        self.assertTrue(r.startswith("✅"))
+        self.assertEqual(self.sent[0][-1], "Enter")
+        self.assertEqual(len(cli.sends), 1)
+
+    def test_foreign_composer_is_never_touched_or_echoed(self):
+        cli = FakeCLI([{"delivery": "typed_not_submitted", "success": False}],
+                      [pane(), pane(composer="ready and merge #33")])
+        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), self.MSG)
+        self.assertTrue(r.startswith("❌"))
+        self.assertNotIn("merge #33", r)
+        self.assertEqual(self.sent, [])
+
+    def test_absent_is_an_honest_failure(self):
+        cli = FakeCLI([{"delivery": "no_evidence", "success": False, "_stderr": "session not found"}],
+                      [pane(), pane()])
+        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), self.MSG)
+        self.assertTrue(r.startswith("❌"))
+        self.assertEqual(len(cli.sends), 1)
+
+    def test_unreadable_screen_never_claims_delivery_and_never_resends(self):
+        cli = FakeCLI([{"delivery": "typed", "success": False}], [], pane_rc=1)
+        r = bl.do_send(ctx_with(cli), "operator", S("ops-main", "ops"), self.MSG)
+        self.assertTrue(r.startswith("⚠️"))
+        self.assertIn("Nothing was resent", r)
+        self.assertEqual(len(cli.sends), 1)
+
+
+class ConductorSend(unittest.TestCase):
+    """The conductor path: the reason Slavna appeared not to answer."""
+
+    MSG = "conductor probe " + LONG
+
+    def setUp(self):
+        self.sent = []
+        self._sub = bl.subprocess
+        bl.subprocess = SimpleNamespace(
+            run=lambda cmd, **k: (self.sent.append(cmd), SimpleNamespace(returncode=0, stderr=""))[1],
+            SubprocessError=subprocess.SubprocessError,
+        )
+
+    def tearDown(self):
+        bl.subprocess = self._sub
+
+    def _ctx(self, cli, status="idle"):
+        ctx = ctx_with(cli, status=status)
+        self.queued = []
+        ctx["_enqueue_message"] = lambda s, m, p, cb: self.queued.append((s, m))
+        ctx["_is_still_running_timeout"] = lambda e: "still running" in e.lower()
+        ctx["get_session_output"] = lambda s, profile=None: "reply text"
+        ctx["RESPONSE_TIMEOUT"] = 300
+        ctx["send_to_conductor"] = lambda *a, **k: None
+        return ctx
+
+    def test_ambiguous_wait_send_awaits_the_reply_instead_of_failing(self):
+        """delivery=typed + the body visible in the transcript = delivered."""
+        cli = FakeCLI([{"delivery": "typed", "success": False,
+                        "_stderr": "message reached 'conductor-slavna' but was never confirmed submitted"}],
+                      [pane(), pane(transcript=self.MSG)])
+        ctx = self._ctx(cli)
+        ok, text, still_running = bl.make_send_to_conductor(ctx)(
+            "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
+        self.assertFalse(ok)
+        self.assertTrue(still_running, "a delivered message must ride the reply-pending path")
+        self.assertEqual(len(cli.sends), 1, "never resend an ambiguous delivery")
+        self.assertEqual(self.queued, [], "never queue a message that already arrived")
+
+    def test_genuinely_absent_wait_send_still_fails(self):
+        cli = FakeCLI([{"delivery": "no_evidence", "success": False, "_stderr": "session not found"}],
+                      [pane(), pane()])
+        ok, _t, still_running = bl.make_send_to_conductor(self._ctx(cli))(
+            "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
+        self.assertFalse(ok)
+        self.assertFalse(still_running)
+
+    def test_still_running_timeout_keeps_its_stock_meaning(self):
+        cli = FakeCLI([{"delivery": "?", "success": False, "_stderr": "agent still running after 5m0s"}], [pane()])
+        ok, _t, still_running = bl.make_send_to_conductor(self._ctx(cli))(
+            "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
+        self.assertFalse(ok)
+        self.assertTrue(still_running)
+        self.assertEqual(len(cli.sends), 1)
+
+    def test_unreadable_screen_never_resends_and_never_lies(self):
+        cli = FakeCLI([{"delivery": "typed", "success": False, "_stderr": "unconfirmed"}], [], pane_rc=1)
+        ok, _t, still_running = bl.make_send_to_conductor(self._ctx(cli))(
+            "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
+        self.assertFalse(ok)
+        self.assertTrue(still_running)
+        self.assertEqual(len(cli.sends), 1)
+        self.assertEqual(self.queued, [])
+
+    def test_successful_wait_send_returns_the_reply(self):
+        cli = FakeCLI([{"delivery": "submitted", "submitted": True}], [pane()])
+        ok, text, still_running = bl.make_send_to_conductor(self._ctx(cli))(
+            "conductor-slavna", self.MSG, profile="operator", wait_for_reply=True)
+        self.assertTrue(ok)
+        self.assertEqual(text, "reply text")
+        self.assertFalse(still_running)
+
+    def test_nowait_ambiguous_but_arrived_is_success_not_a_queue(self):
+        cli = FakeCLI([{"delivery": "typed", "success": False}], [pane(), pane(transcript=self.MSG)])
+        ctx = self._ctx(cli)
+        ok, _t, _s = bl.make_send_to_conductor(ctx)("conductor-slavna", self.MSG, profile="operator")
+        self.assertTrue(ok)
+        self.assertEqual(self.queued, [])
+        self.assertEqual(len(cli.sends), 1)
+
+    def test_busy_conductor_is_queued_without_sending(self):
+        cli = FakeCLI([], [])
+        ctx = self._ctx(cli, status="running")
+        ok, _t, _s = bl.make_send_to_conductor(ctx)("conductor-slavna", self.MSG, profile="operator")
+        self.assertTrue(ok)
+        self.assertEqual(len(self.queued), 1)
+        self.assertEqual(len(cli.sends), 0)
+
+    def test_force_queue_short_circuits(self):
+        cli = FakeCLI([], [])
+        ctx = self._ctx(cli)
+        ok, _t, _s = bl.make_send_to_conductor(ctx)(
+            "conductor-slavna", self.MSG, profile="operator", force_queue=True)
+        self.assertTrue(ok)
+        self.assertEqual(len(self.queued), 1)
+        self.assertEqual(len(cli.sends), 0)
+
+    def test_nowait_composer_rescue_reports_success(self):
+        cli = FakeCLI([{"delivery": "typed", "success": False}],
+                      [pane(), pane(composer=self.MSG), pane(composer=self.MSG)])
+        ctx = self._ctx(cli)
+        ok, _t, _s = bl.make_send_to_conductor(ctx)("conductor-slavna", self.MSG, profile="operator")
+        self.assertTrue(ok)
+        self.assertEqual(self.sent[0][-1], "Enter")
+
+
+class Install(unittest.TestCase):
+    def test_rebinds_the_module_global(self):
+        ctx = ctx_with(FakeCLI([], []))
+        ctx.update({"_enqueue_message": lambda *a: None, "_is_still_running_timeout": lambda e: False,
+                    "get_session_output": lambda *a, **k: "", "RESPONSE_TIMEOUT": 300})
+        stock = lambda *a, **k: ("stock", "", False)
+        ctx["send_to_conductor"] = stock
+        self.assertTrue(bl.install_conductor_send(ctx))
+        self.assertIsNot(ctx["send_to_conductor"], stock)
+
+    def test_fails_closed_when_the_bridge_shape_changed(self):
+        ctx = ctx_with(FakeCLI([], []))          # missing _enqueue_message et al.
+        self.assertFalse(bl.install_conductor_send(ctx))
 
 
 class Handlers(unittest.TestCase):
@@ -144,9 +368,14 @@ class Handlers(unittest.TestCase):
                 @staticmethod
                 def register(fn, cmd): handlers[fn.__name__] = fn
         bl.Command = lambda *names: names
-        ctx = ctx_with(cli or FakeCLI({"success": True, "delivery": "submitted"}, []))
+        ctx = ctx_with(cli or FakeCLI([{"delivery": "submitted", "submitted": True}], [pane(), pane()]))
         if boom:
             ctx["get_sessions_list_all"] = lambda p: 1 / 0
+        ctx.setdefault("_enqueue_message", lambda *a: None)
+        ctx.setdefault("_is_still_running_timeout", lambda e: False)
+        ctx.setdefault("get_session_output", lambda *a, **k: "")
+        ctx.setdefault("RESPONSE_TIMEOUT", 300)
+        ctx.setdefault("send_to_conductor", lambda *a, **k: None)
         bl.register(DP, ctx, lambda m: True)
         replies = []
         async def answer(t, **kw): replies.append(t)
