@@ -193,7 +193,10 @@ def resolve_truth(ctx, sid: str, profile, message: str, baseline, was_busy=False
         # evidence about *our* message, and a guess here would report a lost
         # message as delivered.
         return UNKNOWN, composer
-    status = ctx["get_session_status"](sid, profile=profile)
+    try:
+        status = ctx["get_session_status"](sid, profile=profile)
+    except Exception:  # noqa: BLE001 - a failed probe is ambiguity, not a crash
+        return UNKNOWN, composer
     if status in BUSY_STATUSES:
         # It was positively idle before and is working now with a clean
         # composer: it took the body, the transcript just has not rendered it.

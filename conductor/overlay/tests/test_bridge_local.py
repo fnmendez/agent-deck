@@ -179,6 +179,15 @@ class Truth(unittest.TestCase):
                                     self.MSG, baseline=(0, False))
         self.assertEqual(truth, dl.DELIVERED)
 
+    def test_a_failing_post_send_probe_is_unknown_not_a_crash(self):
+        cli = FakeCLI([], [pane()])
+        ctx = ctx_with(cli)
+        def boom(sid, profile=None):
+            raise RuntimeError("cli unavailable")
+        ctx["get_session_status"] = boom
+        truth, _ = dl.resolve_truth(ctx, "id", "operator", self.MSG, baseline=(0, False))
+        self.assertEqual(truth, dl.UNKNOWN)
+
     def test_unreadable_screen_is_unknown_not_absent(self):
         cli = FakeCLI([], [], pane_rc=1)
         truth, _ = dl.resolve_truth(ctx_with(cli), "id", "operator", self.MSG, 0)

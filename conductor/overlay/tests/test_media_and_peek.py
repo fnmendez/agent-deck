@@ -104,6 +104,18 @@ class Bounds(unittest.TestCase):
             ".ogg",
         )
 
+    def test_audio_document_without_a_mime_type_is_still_audio(self):
+        """Telegram omits mime_type for some forwarded files."""
+        msg = SimpleNamespace(voice=None, audio=None,
+                              document=SimpleNamespace(mime_type=None, file_name="nota.m4a", file_size=7))
+        _o, _mime, name, size, _m = bl.pick_audio(msg)
+        self.assertEqual((name, size), ("nota.m4a", 7))
+
+    def test_a_typeless_document_that_is_not_audio_is_not_claimed(self):
+        self.assertFalse(media.looks_like_audio("", "report.pdf"))
+        self.assertFalse(media.looks_like_audio("application/pdf", "a.mp3"))
+        self.assertTrue(media.looks_like_audio("", "voice.ogg"))
+
     def test_pick_audio_rejects_a_text_message(self):
         with self.assertRaises(media.MediaRejected):
             bl.pick_audio(SimpleNamespace(voice=None, audio=None, document=None))
