@@ -586,6 +586,7 @@ def register(dp, ctx: dict, is_authorized) -> None:
     async def cmd_agents(message):
         only = _args(message) or None
         sessions = await _in_thread(active_sessions, ctx)
+        log.info("overlay /agents%s: %d active sessions", " " + only if only else "", len(sessions))
         multi = len(ctx["get_unique_profiles"]()) > 1
         await _reply_long(message, format_agents(sessions, multi, only))
 
@@ -601,6 +602,7 @@ def register(dp, ctx: dict, is_authorized) -> None:
             await message.answer(err)
             return
         profile, sess = match
+        log.info("overlay /peek %s", sess.get("title"))
         text = await _in_thread(do_peek, ctx, profile, sess)
         token = issue_peek_token(sess, profile, message.from_user.id)
         await message.answer(text, parse_mode="HTML", reply_markup=peek_keyboard(token))
@@ -681,6 +683,7 @@ def register(dp, ctx: dict, is_authorized) -> None:
             await message.answer("⚠️ that image is over the size limit for this bridge")
             return
         body = media.describe_image(target, getattr(message, "caption", "") or "", meta)
+        log.info("overlay image: %s bytes -> %s", meta["size"], target)
         status = await _route_to_conductor(message, body)
         await message.answer("🖼 Image saved: %s\n%s" % (target, status))
 
@@ -710,7 +713,7 @@ def register(dp, ctx: dict, is_authorized) -> None:
                 )
             )
         except (transcribe.TranscriptionUnavailable, transcribe.JobRejected) as exc:
-            log.warning("overlay: transcription refused: %s", exc)
+            log.warning("overlay audio: saved %s but not transcribed: %s", target, exc)
             await message.answer(
                 "🎤 Voice note saved: %s\n"
                 "⚠️ Not transcribed — %s\n"
@@ -719,6 +722,7 @@ def register(dp, ctx: dict, is_authorized) -> None:
             )
             return
         body = media.describe_audio(target, transcript, getattr(message, "caption", "") or "", meta)
+        log.info("overlay audio: %s -> transcript of %d chars", target, len(transcript))
         status = await _route_to_conductor(message, body)
         await message.answer(
             "🎤 Voice note transcribed (%d chars): %s\n%s"
@@ -736,6 +740,7 @@ def register(dp, ctx: dict, is_authorized) -> None:
             functools.partial(validate_peek_callback, ctx, data[3:], user)
         )
         if sess is None:
+            log.info("overlay peek refresh refused: %s", reason)
             await callback.answer(reason, show_alert=True)
             return
         text = await _in_thread(do_peek, ctx, sess["profile"], sess)
