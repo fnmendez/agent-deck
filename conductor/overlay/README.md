@@ -127,3 +127,60 @@ Tests (no Telegram/agent-deck needed):
 1. `/agents` → grouped list without archived sessions (`gsd` must be absent).
 2. `/peek ops-main` → screen snapshot without the `❯` input box.
 3. `/send ops-main hola desde telegram` → `✅ Sent to ops-main (delivery: submitted)`; try `/send ops x` → ambiguity list.
+
+## Handoff
+
+### State on 2026-08-29
+
+Deployed and running: bridge pid was 86736 after the last `reapply.sh`, with
+`overlay: registered …` and `overlay: send_to_conductor now reports durable
+delivery truth` in `bridge.log`. The deployed overlay matches the branch
+`feat/conductor-inbound-media` (fork PR #2, unmerged).
+
+### Rollback
+
+Ordered from smallest to largest, each verified to leave the bridge running:
+
+1. **Undo an overlay change only** — restore the previous overlay directory and
+   re-apply. Timestamped copies are made before each deploy:
+   ```sh
+   cp -R ~/.local/share/agent-deck/conductor/overlay.bak-<stamp>/. \
+         ~/.local/share/agent-deck/conductor/overlay/
+   ~/.local/share/agent-deck/conductor/overlay/reapply.sh
+   ```
+2. **Remove the overlay entirely** — restore the stock bridge and restart:
+   ```sh
+   ~/.local/share/agent-deck/conductor/overlay/reapply.sh --rollback
+   ```
+   `bridge.py.pre-overlay` is the untouched stock bridge saved when the hook was
+   first inserted, so this returns the conductor to vendor behaviour. It refuses
+   when `bridge.py` carries no hook, so it can never downgrade a fresh update.
+3. **Verify either one**: `launchctl list | grep conductor-bridge` shows a new
+   pid, and the lines appended to `bridge.log` after the restart show
+   `Run polling for bot` (stock) or `overlay: registered` (overlay).
+
+### Two acceptances that need a person
+
+Both are Telegram paths no automated run can trigger; everything behind them is
+covered by unit tests, but the round trip has not been exercised by hand:
+
+1. **Send Slavna one voice note.** Expected: a reply saying the note was saved,
+   with the exact reason it was not transcribed, and the file present under
+   `<conductor>/inbox/audio/<date>/`. Nothing is sent to any other service.
+2. **Press 🔄 Refresh under a `/peek` reply.** Expected: the same Telegram
+   message updates in place with a fresh snapshot. A button older than 30
+   minutes, or one for a session that has gone, is refused with a short reason
+   instead of acting on the wrong target.
+
+### Open decision: audio transcription
+
+The audio path stays **fail-closed** until Franco chooses explicitly. See
+"Transcription is deliberately fail-closed" above for why the Superwhisper CLI
+cannot do it. The options, smallest first:
+
+| | Option | Trade-off | To undo |
+|---|---|---|---|
+| A | Keep fail-closed | Voice notes are saved and announced, never transcribed | nothing to undo |
+| B | A local offline engine inside this same job harness | Audio never leaves the Mac; not `Ultra (Cloud)` | delete the model; capability returns to unavailable on its own |
+| C | The documented `open -a superwhisper` route | Gets `Ultra (Cloud)`, but runs through the live app, its history and its auto-paste — the isolation this harness exists to guarantee | revert the change |
+| D | Ask the vendor for a headless verb | No work now; `detect_capability` picks it up the day it ships | n/a |
