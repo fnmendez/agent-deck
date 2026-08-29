@@ -81,7 +81,7 @@ class Bounds(unittest.TestCase):
     def test_pick_image_takes_the_largest_photo(self):
         msg = SimpleNamespace(photo=[SimpleNamespace(file_size=10, width=1, height=1),
                                      SimpleNamespace(file_size=99, width=9, height=9)])
-        obj, mime, _n, size, meta = bl.pick_image(msg)
+        _obj, mime, _n, size, meta = bl.pick_image(msg)
         self.assertEqual(size, 99)
         self.assertEqual(mime, "image/jpeg")
         self.assertEqual(meta["width"], 9)

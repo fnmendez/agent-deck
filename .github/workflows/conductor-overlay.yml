@@ -19,9 +19,13 @@ on:
       - 'internal/session/conductor_bridge.py'
       - '.github/workflows/conductor-overlay.yml'
 
+permissions:
+  contents: read
+
 jobs:
   overlay-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:

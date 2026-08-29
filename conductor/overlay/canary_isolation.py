@@ -152,6 +152,13 @@ def main():
 
         print("\n== after ==")
         after = snapshot()
+        # Check the roots the jobs above actually used, not just the system
+        # temp dir - a job runs under workspace_root, so globbing /tmp alone
+        # would pass without ever measuring anything.
+        workspace_leftovers = []
+        for root in (Path(tmp), Path(tmp) / "jobs", Path(tmp) / "jobs2", Path(tempfile.gettempdir())):
+            workspace_leftovers.extend(str(x) for x in root.glob("conductor-stt-*"))
+        print("workspace leftovers: %s" % (workspace_leftovers or "none"))
 
     checks = [
         ("frontmost app unchanged", before["frontmost"] == after["frontmost"]),
@@ -160,7 +167,7 @@ def main():
         ("no superwhisper restart", before["sw_starts"] == after["sw_starts"]),
         ("no extra superwhisper process", len(after["sw_pids"]) <= len(before["sw_pids"])),
         ("live database untouched", before["db"] == after["db"]),
-        ("no job workspace left behind", not list(Path(tempfile.gettempdir()).glob("conductor-stt-*"))),
+        ("no job workspace left behind", not workspace_leftovers),
         ("no stand-in engine descendants left", not run(["pgrep", "-f", "^sleep 90"])),
     ]
     print("\n== verdict ==")
