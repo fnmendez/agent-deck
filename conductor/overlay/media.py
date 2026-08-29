@@ -37,6 +37,17 @@ FENCE_END = "-----END UNTRUSTED TELEGRAM DATA-----"
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 
+def looks_like_audio(mime: str, file_name: str) -> bool:
+    """Audio by declared type, or by extension when Telegram omits the type."""
+    mime = (mime or "").split(";")[0].strip().lower()
+    if mime.startswith("audio/") or mime in AUDIO_EXTENSIONS:
+        return True
+    if mime:
+        return False
+    suffix = Path(str(file_name or "")).suffix.lower()
+    return suffix in set(AUDIO_EXTENSIONS.values())
+
+
 class MediaRejected(Exception):
     """The attachment is outside the bounds we accept. Message is user-facing."""
 

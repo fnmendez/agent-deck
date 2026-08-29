@@ -326,9 +326,11 @@ def pick_audio(message):
                 {"duration": getattr(obj, "duration", None)},
             )
     doc = getattr(message, "document", None)
-    if doc is not None and (getattr(doc, "mime_type", "") or "").lower().startswith("audio/"):
-        return (doc, doc.mime_type.lower(), getattr(doc, "file_name", "audio"),
-                getattr(doc, "file_size", None), {})
+    if doc is not None:
+        mime = (getattr(doc, "mime_type", "") or "").lower()
+        name = getattr(doc, "file_name", None) or "audio"
+        if media.looks_like_audio(mime, name):
+            return doc, mime or "audio/ogg", name, getattr(doc, "file_size", None), {}
     raise media.MediaRejected("no audio found in that message")
 
 
@@ -677,8 +679,11 @@ def register(dp, ctx: dict, is_authorized) -> None:
 
     def _is_audio_document(message) -> bool:
         doc = getattr(message, "document", None)
-        mime = (getattr(doc, "mime_type", "") or "").lower() if doc is not None else ""
-        return mime.startswith("audio/") or mime in media.AUDIO_EXTENSIONS
+        if doc is None:
+            return False
+        return media.looks_like_audio(
+            getattr(doc, "mime_type", "") or "", getattr(doc, "file_name", "") or ""
+        )
 
     async def on_photo(message):
         if not is_authorized(message):
@@ -779,9 +784,13 @@ def register(dp, ctx: dict, is_authorized) -> None:
             await callback.message.edit_text(
                 text, parse_mode="HTML", reply_markup=peek_keyboard(token)
             )
-        except Exception as exc:  # noqa: BLE001 - "message is not modified" et al.
-            log.info("overlay: peek refresh edit skipped: %s", exc.__class__.__name__)
-            await callback.answer("no change since the last snapshot")
+        except Exception as exc:  # noqa: BLE001 - aiogram 3 raises TelegramBadRequest
+            if "message is not modified" in str(exc).lower():
+                await callback.answer("no change since the last snapshot")
+                return
+            # Anything else really failed; saying "no change" would hide it.
+            log.error("overlay: peek refresh failed: %s: %s", exc.__class__.__name__, exc)
+            await callback.answer("refresh failed — try /peek again", show_alert=True)
             return
         await callback.answer("refreshed")
 
