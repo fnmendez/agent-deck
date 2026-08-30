@@ -326,15 +326,25 @@ def transcribe_file(audio_path, workspace_root=None, model=DEFAULT_MODEL,
 # ------------------------------------------------------------------ the engine
 # Resolved at call time, never at import: the deployed overlay and the repo
 # checkout sit in different places, and a test must be able to point elsewhere.
+# A native arm64 whisper-cli with Metal, built from ggml-org/whisper.cpp v1.9.2
+# (cmake -DCMAKE_OSX_ARCHITECTURES=arm64 -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON)
+# and dropped into <conductor>/stt-bin/. The Homebrew binary on this Mac is x86
+# under Rosetta on the SSE4.2 CPU path: Whisper large took 59 s for a 7.9 s note
+# there and 3 s natively on the GPU. The Homebrew path stays as the fallback.
+NATIVE_BIN_DIR = "stt-bin"
 WHISPER_CLI = "/usr/local/bin/whisper-cli"
 FFMPEG = "/usr/local/bin/ffmpeg"
+# Superwhisper's "Ultra (Local)" is Whisper large in ggml format, which is
+# exactly what whisper.cpp loads. Reading that file is all this job does with
+# the app: never its process, its history, its settings or its clipboard.
+SUPERWHISPER_ULTRA_LOCAL = Path.home() / "Library/Application Support/superwhisper/ggml-large.bin"
 MODEL_DIR_NAME = "stt-models"
 DEFAULT_MODEL_FILE = "ggml-small.bin"
 DEFAULT_LANGUAGE = "auto"
 MAX_AUDIO_SECONDS = 480.0
-# Measured on this machine (M1 Max, x86 binary under Rosetta, SSE4.2 backend):
-# ggml-small greedy runs at ~1.0-1.7x real time. The multiplier is the slack on
-# top of that, so a slow run is still finished rather than killed mid-sentence.
+# Measured natively on this M1 Max with Metal: Whisper large, beam 5, runs at
+# ~0.4x real time. The multiplier is slack so that a slow run is still finished
+# rather than killed mid-sentence, and it also covers the Rosetta fallback.
 DEADLINE_BASE = 60.0
 DEADLINE_PER_AUDIO_SECOND = 4.0
 DEADLINE_CAP = 1800.0
@@ -385,6 +395,18 @@ def conductor_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def default_binary() -> Path:
+    native = conductor_root() / NATIVE_BIN_DIR / "whisper-cli"
+    return native if native.is_file() else Path(WHISPER_CLI)
+
+
+def default_model() -> Path:
+    """The app's own Ultra (Local) weights when present, else the small model."""
+    if SUPERWHISPER_ULTRA_LOCAL.is_file():
+        return SUPERWHISPER_ULTRA_LOCAL
+    return conductor_root() / MODEL_DIR_NAME / DEFAULT_MODEL_FILE
+
+
 def _mean_token_probability(segments) -> float:
     """Mean probability over real tokens; whisper's own confidence signal."""
     values = []
@@ -404,12 +426,9 @@ class WhisperCpp:
 
     def __init__(self, binary=None, ffmpeg=None, model=None, threads=None,
                  language=DEFAULT_LANGUAGE):
-        self.binary = Path(binary or os.environ.get("CONDUCTOR_STT_WHISPER") or WHISPER_CLI)
+        self.binary = Path(binary or os.environ.get("CONDUCTOR_STT_WHISPER") or default_binary())
         self.ffmpeg = Path(ffmpeg or os.environ.get("CONDUCTOR_STT_FFMPEG") or FFMPEG)
-        self.model = Path(
-            model or os.environ.get("CONDUCTOR_STT_MODEL")
-            or conductor_root() / MODEL_DIR_NAME / DEFAULT_MODEL_FILE
-        )
+        self.model = Path(model or os.environ.get("CONDUCTOR_STT_MODEL") or default_model())
         self.threads = int(threads or os.environ.get("CONDUCTOR_STT_THREADS")
                            or default_thread_count())
         self.language = str(language or os.environ.get("CONDUCTOR_STT_LANGUAGE")
@@ -417,7 +436,10 @@ class WhisperCpp:
 
     @property
     def name(self) -> str:
-        return "whisper.cpp %s" % self.model.stem.replace("ggml-", "")
+        label = self.model.stem.replace("ggml-", "")
+        if self.model == SUPERWHISPER_ULTRA_LOCAL:
+            label = "Ultra local (whisper large)"
+        return "whisper.cpp %s" % label
 
     def available(self):
         """(ok, reason). The reason names the exact missing piece, with its fix."""
@@ -475,7 +497,8 @@ class WhisperCpp:
         cmd = [
             str(self.binary), "-m", str(self.model), "-f", str(wav),
             "-l", self.language, "-t", str(self.threads),
-            "-bo", "1", "-bs", "1",         # greedy: ~2x faster, same text here
+            "-bs", "5",                     # beam search: the app's quality, and
+                                            # on the GPU it costs nothing visible
             "-nt", "-np", "-ojf", "-of", str(stem),
         ]
         result = runner(cmd, job_environment(workspace),

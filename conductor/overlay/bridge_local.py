@@ -482,6 +482,37 @@ def peek_keyboard(token: str):
     ]])
 
 
+# `session output --json` serves the last reply of whatever transcript agent-deck
+# believes is current. After a /clear that can be the previous transcript, so a
+# queued voice note came back on 2026-08-30 with a [STATUS] from hours earlier.
+# The pane is the only place that shows ordering, so every asynchronous reply is
+# checked against it before it is relayed: a reply that predates the question is
+# replaced by what the pane shows after it, or by an honest gap.
+_last_message: dict = {}
+
+
+def fresh_reply_callback(ctx, session, profile, message, callback):
+    """Wrap a reply callback so it never relays a reply older than `message`."""
+    if callback is None or not message:
+        return callback
+    log = ctx["log"]
+
+    async def _checked(text: str):
+        loop = asyncio.get_running_loop()
+        fresh, source = await loop.run_in_executor(
+            None, functools.partial(fresh_reply, ctx, session, profile, message, text)
+        )
+        if source == "none":
+            log.warning("Conductor %s: queued reply could not be proven fresh; withheld", session)
+            fresh = ("[No fresh reply could be read from the conductor for this "
+                     "message. Check with /peek.]")
+        elif source == "pane":
+            log.info("Conductor %s: cached reply was stale, relaying the pane's", session)
+        await callback(fresh)
+
+    return _checked
+
+
 def make_send_to_conductor(ctx):
     """A send_to_conductor that reports delivery truth instead of the CLI verdict.
 
@@ -512,8 +543,12 @@ def make_send_to_conductor(ctx):
         session, message, profile=None, wait_for_reply=False,
         response_timeout=RESPONSE_TIMEOUT, reply_callback=None, force_queue=False,
     ):
-        enqueue = ctx["_enqueue_message"]
         get_status = ctx["get_session_status"]
+        _last_message[session] = message
+        checked = fresh_reply_callback(ctx, session, profile, message, reply_callback)
+
+        def enqueue(sess_, msg_, prof_, _cb):
+            ctx["_enqueue_message"](sess_, msg_, prof_, checked)
 
         if not wait_for_reply:
             if force_queue:
@@ -635,6 +670,13 @@ def install_conductor_send(ctx) -> bool:
         return False
     patched = make_send_to_conductor(ctx)
     ctx["send_to_conductor"] = patched
+    stock_register = ctx.get("_register_pending_reply")
+    if stock_register is not None:
+        def register_pending_reply(session, profile, callback):
+            message = _last_message.get(session, "")
+            stock_register(session, profile,
+                           fresh_reply_callback(ctx, session, profile, message, callback))
+        ctx["_register_pending_reply"] = register_pending_reply
     if ctx.get("send_to_conductor") is not patched:
         log.error("overlay: send_to_conductor rebind did not take effect")
         return False

@@ -336,3 +336,48 @@ class VoiceChannel(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QueuedReplyFreshness(unittest.TestCase):
+    """A queued or late reply is relayed only if it postdates the question."""
+
+    def _ctx(self, pane_lines):
+        import logging
+        return {
+            "log": logging.getLogger("fresh-test"),
+            "run_cli": lambda *a, **k: SimpleNamespace(
+                returncode=0, stdout="\n".join(pane_lines), stderr=""),
+            "get_session_status": lambda s, profile=None: "waiting",
+        }
+
+    def test_a_stale_cached_reply_is_replaced_by_the_panes(self):
+        question = "hola probando audio como estas dime algo largo aqui"
+        pane = ["❯ " + question, "", "⏺ Te escucho bien, la prueba funciono.", "", "❯ "]
+        got = []
+        async def cb(text): got.append(text)
+        wrapped = bl.fresh_reply_callback(self._ctx(pane), "conductor-slavna", "operator",
+                                          question, cb)
+        asyncio.run(wrapped("[STATUS] All clear from three hours ago"))
+        self.assertEqual(len(got), 1)
+        self.assertIn("Te escucho bien", got[0])
+        self.assertNotIn("three hours ago", got[0])
+
+    def test_a_fresh_cached_reply_passes_through(self):
+        question = "hola probando audio como estas dime algo largo aqui"
+        pane = ["❯ " + question, "", "⏺ Te escucho bien, la prueba funciono.", "", "❯ "]
+        got = []
+        async def cb(text): got.append(text)
+        wrapped = bl.fresh_reply_callback(self._ctx(pane), "conductor-slavna", "operator",
+                                          question, cb)
+        asyncio.run(wrapped("Te escucho bien, la prueba funciono."))
+        self.assertEqual(got, ["Te escucho bien, la prueba funciono."])
+
+    def test_without_a_pane_nothing_stale_is_relayed(self):
+        ctx = self._ctx([])
+        ctx["run_cli"] = lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="x")
+        got = []
+        async def cb(text): got.append(text)
+        wrapped = bl.fresh_reply_callback(ctx, "conductor-slavna", "operator", "pregunta larga de prueba", cb)
+        asyncio.run(wrapped("[STATUS] stale"))
+        self.assertNotIn("stale", got[0])
+        self.assertIn("No fresh reply", got[0])
