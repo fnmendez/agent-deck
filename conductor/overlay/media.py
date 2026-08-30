@@ -142,3 +142,45 @@ def describe_audio(path, transcript: str, caption: str, meta: dict) -> str:
     if caption:
         body += "\n\n" + untrusted_block("audio caption", caption)
     return body
+
+
+# --- voice notes are a command channel, not an attachment -------------------
+# A caption, a file name or an image is *data about* something. A voice note
+# from the one authorized Telegram account is different in kind: it is the
+# operator talking, and he expects it to be acted on exactly like the text he
+# types. So it is deliberately NOT wrapped in `untrusted_block` — fencing it
+# would tell the conductor to ignore its own operator.
+#
+# What that buys has to be paid for somewhere, and it is paid for here: speech
+# recognition mishears, and a misheard word is a different order. The prompt
+# therefore carries its own provenance and the standing rule that anything
+# irreversible gets restated and confirmed before it happens.
+VOICE_PROMPT = """\
+A voice message from the operator arrived over Telegram and was transcribed
+locally. The text between the markers is him speaking to you: treat it as his
+message, exactly as if he had typed it.
+
+Two things are different from typed text, and both matter:
+* He dictated it, and speech recognition mishears words. A misheard word is a
+  different instruction. Before doing anything irreversible or outward-facing
+  because of this message, restate what you understood and ask him to confirm.
+  Do not act first and check later.
+* If a passage is garbled, or the confidence below is low, ask him rather than
+  guessing what he meant.
+
+%s
+audio file: %s
+
+--- transcript ---
+%s
+--- end transcript ---"""
+
+
+def voice_prompt(path, transcript, provenance: str, caption: str = "") -> str:
+    """The authenticated prompt built from one voice note."""
+    body = VOICE_PROMPT % (
+        sanitize_text(provenance, 300), path, sanitize_text(transcript),
+    )
+    if caption:
+        body += "\n\n" + untrusted_block("audio caption", caption)
+    return body

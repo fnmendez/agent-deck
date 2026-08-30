@@ -110,14 +110,19 @@ def main():
         print("%-10s %s" % ("db", before["db"]))
 
         print("\n== running one real job through the production path ==")
+        engine = t.WhisperCpp()
+        ready, why = engine.available()
+        print("engine: %s (%s)" % (engine.name, why if ready else "unavailable: %s" % why))
         started = time.monotonic()
         try:
-            text = t.transcribe_file(
+            result = t.transcribe_voice(
                 audio, workspace_root=Path(tmp) / "jobs", lock_path=Path(tmp) / "stt.lock",
             )
-            print("transcript: %d chars" % len(text))
+            print("transcript: %d chars | %s" % (len(result.text), result.provenance()))
         except (t.TranscriptionUnavailable, t.JobRejected) as exc:
-            print("refused (expected while no permitted engine exists): %s" % exc)
+            # Fail-closed is a pass here too: what matters is that nothing below
+            # moved, whether the job produced a transcript or refused to.
+            print("refused: %s" % exc)
         print("elapsed: %.2fs" % (time.monotonic() - started))
 
         if args.simulate:
