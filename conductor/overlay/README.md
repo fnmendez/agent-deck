@@ -75,6 +75,14 @@ attributed to the wrong audio is not a bad row in a table, it is the conductor
 carrying out an order nobody gave, and it would be indistinguishable from a real
 one. So the channel is built around four properties rather than around accuracy:
 
+**The rule these turn on is authorship, not trust.** The untrusted fence was never
+distrust of Franco; it was the answer to "who wrote this?" applied bluntly, by
+fencing every transcript. The right question is narrower: *is the sender the
+author?* When he speaks, he is, and fencing him would tell the conductor to ignore
+its own operator. When he forwards someone else's note, he is not, and the fence is
+exactly right. Anyone tempted to simplify the forwarding checks below into "he is
+authorized, so run it" is answering the wrong question.
+
 | | Property | How it holds |
 |---|---|---|
 | I8 | Only he can open it, and only when he is the author | The bridge's own single-user gate: `on_audio` returns before downloading anything for any other sender. That gate answers who *sent* the note, though, not who *recorded* it — so a note carrying any forwarding marker (`forward_origin`, the legacy `forward_*` fields, `is_automatic_forward`, `via_bot`, `sender_chat`) is transcribed and answered, but delivered behind the untrusted fence. A stranger's words are never run as his instruction. |
