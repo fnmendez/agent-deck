@@ -63,33 +63,79 @@ downgrade a freshly updated bridge.
 |---|---|
 | Delivery truth | `agent-deck session send` exits non-zero with `delivery=typed` when the body reached the pane but submission could not be confirmed. That verdict is *ambiguous*, not a failure, and the stock bridge treated it as one — which is why the conductor could receive a message, answer it, and still report "not delivered". `delivery.py` settles it from the session's own screen (baseline → send → observe) and the overlay rebinds `send_to_conductor` to report that truth. A message proven delivered rides the reply-pending path instead of being resent, so an ambiguous verdict can never duplicate it. |
 | Inbound images | Photos and image documents are size/type bounded, stored under `<conductor>/inbox/images/`, and handed to the conductor as an absolute path it can open with its file tools. |
-| Inbound audio | Voice notes are bounded and stored under `<conductor>/inbox/audio/`. Transcription runs through `transcribe.py`, which **fails closed**: see the note below. |
+| Inbound voice | A voice note from the authorized account is transcribed locally and handed to the conductor **as a prompt**, and the conductor's answer comes back to the same chat — the same round trip as typing those words. See "The voice channel" below. |
 | `/peek` refresh | The snapshot carries an inline 🔄 button that edits the same message in place. Every press re-validates the target (token, Telegram user, session id **and** title, profile) and refuses stale, expired or forged callbacks. |
 
-### Transcription is deliberately fail-closed
+### The voice channel
 
-The installed Superwhisper CLI cannot transcribe a file — it is a history/search
-tool (`superultrainc/superwhisper-cli-release` v0.1.0), and its MCP server exposes
-only history/vocab/snippets. Every documented file-transcription path runs through
-the GUI app:
+A voice note from Franco is **not** an attachment. It is him talking, and it is
+executed like the text he types: transcribed, handed to the conductor as a prompt,
+and answered in the same chat. That reclassifies the whole path — a transcript
+attributed to the wrong audio is not a bad row in a table, it is the conductor
+carrying out an order nobody gave, and it would be indistinguishable from a real
+one. So the channel is built around four properties rather than around accuracy:
 
-* [File transcription](https://superwhisper.com/docs/get-started/transcribe-files) documents
-  the "Command Line Method" as `open /path/audio.mp3 -a superwhisper` — LaunchServices
-  handing the file to the running app, using whatever mode is active.
-* [Advanced settings](https://superwhisper.com/docs/get-started/settings-advanced) confirms the
-  app writes the clipboard, auto-pastes and simulates keystrokes.
-* [Voice models](https://superwhisper.com/docs/models/voice) lists `Ultra (Cloud)` as an app model.
-* The only public API ([enterprise overview](https://superwhisper.com/docs/enterprise/api/overview),
-  live spec at `https://api.superwhisper.com/api/v1/openapi.json`) has three read-only stats
-  endpoints; the OpenAPI linked from the docs index is Mintlify's sample Plant Store, not a real API.
-* The [docs index](https://superwhisper.com/docs/llms.txt) publishes no CLI or transcription API.
+| | Property | How it holds |
+|---|---|---|
+| I8 | Only he can open it | The bridge's own single-user gate. `on_audio` returns before downloading anything for any other sender. |
+| I9 | The text provably belongs to *this* file | The transcript is the stdout/JSON of the process that read this file's private copy. There is no shared history to attribute from — the failure mode is absent by construction, not guarded against. |
+| I10 | A mishearing cannot act on its own | The prompt carries a standing rule: restate and confirm before anything irreversible or outward-facing. Below `MIN_CONFIDENCE` the note is shown but never executed. A redelivered note is refused (durable ledger keyed by Telegram's `file_unique_id`). |
+| I11 | The conductor knows what it is reading | Every prompt carries its provenance line: engine, audio length, detected language, mean token confidence. |
 
-So `transcribe.py` detects the capability at runtime and refuses with that exact
-reason rather than driving the GUI or silently substituting another engine —
-sending the operator's audio to an unapproved service would be the worse outcome.
-The day the vendor ships a transcribe verb, `detect_capability` starts returning
-available with no code change. Meanwhile the audio path still saves the file and
-tells the conductor it arrived.
+Franco also sees the transcript in Telegram before the answer arrives, so a
+mishearing is visible to him and not only to the conductor.
+
+### The engine, and why this one
+
+`whisper.cpp` (Homebrew `whisper-cpp`) with `ggml-small.bin`, fed by `ffmpeg`.
+Two plain CLI binaries: no GUI, no clipboard, no Accessibility, no microphone,
+no network, no TCC prompt — which is what lets a launchd-run bridge use it at
+all. Measured on this machine (M1 Max, x86 binaries under Rosetta, SSE4.2
+backend) against a real 7.9 s Spanish voice note:
+
+| model | decoding | wall clock | × real time |
+|---|---|---|---|
+| small | greedy, `-l es` | 8.1 s | 1.0× |
+| small | greedy, `-l auto` | 13.6 s | 1.7× |
+| small | beam 5, `-l auto` | 20.1 s | 2.6× |
+| large-v3-turbo | greedy, `-l auto` | 55.7 s | 7.1× |
+
+All four produced the same, correct text, so `small` + greedy is the honest
+choice: `large-v3-turbo` costs 7× real time for no gain here, which would put a
+one-minute note past seven minutes. The two engines that would have been faster
+are ruled out by the machine, not by preference:
+
+* **Apple's on-device Speech (macOS 26)** needs the macOS 26 SDK. The installed
+  Command Line Tools are 13.3 (Swift 5.8, SDK 13.3) and there is no `metal`
+  compiler, so it cannot be built here without a multi-GB toolchain upgrade —
+  and it would still need a Speech Recognition TCC grant that a launchd job
+  cannot be relied on to obtain.
+* **mlx-whisper** requires a native arm64 Python. The only Homebrew on this
+  machine is the x86 prefix at `/usr/local`, running under Rosetta.
+
+The Superwhisper *app* remains out of bounds for the reason it always was: it is
+one shared GUI process with `autoPasteEnabled = 1`, so a bridge job could paste
+into whatever Franco has focused, and "the last history entry" can be a private
+dictation of his rather than this note. `assert_safe_command` refuses `open`,
+`osascript`, `pbcopy` and friends outright, so that path cannot be reintroduced
+by a later edit.
+
+Model resolution, in order: `CONDUCTOR_STT_MODEL`, then
+`<conductor>/stt-models/ggml-small.bin`. Also honoured:
+`CONDUCTOR_STT_WHISPER`, `CONDUCTOR_STT_FFMPEG`, `CONDUCTOR_STT_THREADS`,
+`CONDUCTOR_STT_LANGUAGE`. Install:
+
+```sh
+brew install whisper-cpp ffmpeg
+mkdir -p ~/.local/share/agent-deck/conductor/stt-models
+curl -fL -o ~/.local/share/agent-deck/conductor/stt-models/ggml-small.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+```
+
+Nothing is ever substituted on failure. If any piece is missing the reply names
+exactly which one and how to fix it, the audio stays on disk, and no prompt is
+delivered — sending Franco's audio to a service he did not approve would be a
+far worse outcome than no transcript.
 
 `canary_isolation.py` proves the isolation on a real machine (`--simulate` runs a
 live stand-in engine through the same guard):
@@ -121,7 +167,8 @@ re-capture before Enter and the strict ownership rule above. Diamond review reco
 
 Tests (no Telegram/agent-deck needed):
     cd conductor/overlay && python3 -m unittest tests.test_bridge_local \
-        tests.test_media_and_peek tests.test_transcribe_isolation tests.test_reapply_contract
+        tests.test_media_and_peek tests.test_transcribe_isolation \
+        tests.test_voice_prompt tests.test_voice_channel tests.test_reapply_contract
 
 ## Morning checklist (Franco, from Telegram)
 1. `/agents` → grouped list without archived sessions (`gsd` must be absent).
@@ -164,23 +211,19 @@ Ordered from smallest to largest, each verified to leave the bridge running:
 Both are Telegram paths no automated run can trigger; everything behind them is
 covered by unit tests, but the round trip has not been exercised by hand:
 
-1. **Send Slavna one voice note.** Expected: a reply saying the note was saved,
-   with the exact reason it was not transcribed, and the file present under
-   `<conductor>/inbox/audio/<date>/`. Nothing is sent to any other service.
+1. **Send Slavna one voice note.** Expected: `🎤 transcribing locally…`, then
+   what it heard with its provenance line, then the conductor's actual answer to
+   what he said. The file is under `<conductor>/inbox/audio/<date>/` and nothing
+   is sent to any other service.
 2. **Press 🔄 Refresh under a `/peek` reply.** Expected: the same Telegram
    message updates in place with a fresh snapshot. A button older than 30
    minutes, or one for a session that has gone, is refused with a short reason
    instead of acting on the wrong target.
 
-### Open decision: audio transcription
+### Audio transcription: decided
 
-The audio path stays **fail-closed** until Franco chooses explicitly. See
-"Transcription is deliberately fail-closed" above for why the Superwhisper CLI
-cannot do it. The options, smallest first:
-
-| | Option | Trade-off | To undo |
-|---|---|---|---|
-| A | Keep fail-closed | Voice notes are saved and announced, never transcribed | nothing to undo |
-| B | A local offline engine inside this same job harness | Audio never leaves the Mac; not `Ultra (Cloud)` | delete the model; capability returns to unavailable on its own |
-| C | The documented `open -a superwhisper` route | Gets `Ultra (Cloud)`, but runs through the live app, its history and its auto-paste — the isolation this harness exists to guarantee | revert the change |
-| D | Ask the vendor for a headless verb | No work now; `detect_capability` picks it up the day it ships | n/a |
+Option B (a local offline engine inside this same job harness) was taken on
+2026-08-29. See "The engine, and why this one" above for the measurements behind
+it. To undo: delete `<conductor>/stt-models/`, and the engine reports itself
+unavailable again on its own — voice notes go back to being saved and announced,
+never transcribed.

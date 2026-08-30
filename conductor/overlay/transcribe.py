@@ -18,6 +18,14 @@ Isolation is enforced in four places:
   two engines on the machine at once.
 * ``run_guarded`` gives each job its own process group and a hard deadline, then
   kills the whole group and *verifies* nothing survived.
+
+The engine that actually runs is ``WhisperCpp``: ffmpeg decodes the voice note
+into a 16 kHz mono WAV inside the private workspace, and ``whisper-cli`` reads
+only that copy. Both are plain CLI binaries — no GUI, no clipboard, no
+Accessibility, no microphone, no network — so the transcript comes back on the
+stdout/JSON of the very process that produced it. That is what makes the
+transcript *provably* the transcript of this file: there is no shared history to
+attribute the wrong text from.
 """
 
 from __future__ import annotations
@@ -313,3 +321,222 @@ def transcribe_file(audio_path, workspace_root=None, model=DEFAULT_MODEL,
                     % (result.returncode, (result.stderr or "").strip()[:300])
                 )
             return (result.stdout or "").strip()
+
+
+# ------------------------------------------------------------------ the engine
+# Resolved at call time, never at import: the deployed overlay and the repo
+# checkout sit in different places, and a test must be able to point elsewhere.
+WHISPER_CLI = "/usr/local/bin/whisper-cli"
+FFMPEG = "/usr/local/bin/ffmpeg"
+MODEL_DIR_NAME = "stt-models"
+DEFAULT_MODEL_FILE = "ggml-small.bin"
+DEFAULT_LANGUAGE = "auto"
+MAX_AUDIO_SECONDS = 480.0
+# Measured on this machine (M1 Max, x86 binary under Rosetta, SSE4.2 backend):
+# ggml-small greedy runs at ~1.0-1.7x real time. The multiplier is the slack on
+# top of that, so a slow run is still finished rather than killed mid-sentence.
+DEADLINE_BASE = 60.0
+DEADLINE_PER_AUDIO_SECOND = 4.0
+DEADLINE_CAP = 1800.0
+DECODE_DEADLINE = 120.0
+WAV_RATE = 16000
+WAV_BYTES_PER_SAMPLE = 2
+# Below this mean token probability the audio was not understood well enough to
+# be acted on. It is a floor for garbled audio, not a quality bar.
+MIN_CONFIDENCE = 0.45
+
+
+class Transcript:
+    """What one job produced, with everything needed to weigh it."""
+
+    def __init__(self, text, language=None, confidence=None, engine="", audio_seconds=None):
+        self.text = text
+        self.language = language
+        self.confidence = confidence
+        self.engine = engine
+        self.audio_seconds = audio_seconds
+
+    def provenance(self) -> str:
+        """One line describing where this text came from and how sure it is."""
+        bits = ["engine: %s (local, offline)" % self.engine]
+        if self.audio_seconds is not None:
+            bits.append("audio: %.1fs" % self.audio_seconds)
+        if self.language:
+            bits.append("detected language: %s" % self.language)
+        bits.append(
+            "confidence: %.2f" % self.confidence if self.confidence is not None
+            else "confidence: not reported"
+        )
+        return " · ".join(bits)
+
+
+def deadline_for(audio_seconds) -> float:
+    if not audio_seconds or audio_seconds <= 0:
+        return DEADLINE_BASE
+    return min(DEADLINE_CAP, DEADLINE_BASE + DEADLINE_PER_AUDIO_SECOND * float(audio_seconds))
+
+
+def default_thread_count() -> int:
+    return max(1, min(8, (os.cpu_count() or 4) - 2))
+
+
+def conductor_root() -> Path:
+    """The deployed overlay lives in <conductor>/overlay/, so the parent is it."""
+    return Path(__file__).resolve().parent.parent
+
+
+def _mean_token_probability(segments) -> float:
+    """Mean probability over real tokens; whisper's own confidence signal."""
+    values = []
+    for segment in segments or []:
+        for token in segment.get("tokens") or []:
+            text = str(token.get("text", ""))
+            probability = token.get("p")
+            # [_BEG_], [_TT_123] and friends are control tokens, not speech.
+            if text.startswith("[_") or not isinstance(probability, (int, float)):
+                continue
+            values.append(float(probability))
+    return round(sum(values) / len(values), 4) if values else None
+
+
+class WhisperCpp:
+    """whisper.cpp behind ffmpeg. Two plain binaries, no GUI and no network."""
+
+    def __init__(self, binary=None, ffmpeg=None, model=None, threads=None,
+                 language=DEFAULT_LANGUAGE):
+        self.binary = Path(binary or os.environ.get("CONDUCTOR_STT_WHISPER") or WHISPER_CLI)
+        self.ffmpeg = Path(ffmpeg or os.environ.get("CONDUCTOR_STT_FFMPEG") or FFMPEG)
+        self.model = Path(
+            model or os.environ.get("CONDUCTOR_STT_MODEL")
+            or conductor_root() / MODEL_DIR_NAME / DEFAULT_MODEL_FILE
+        )
+        self.threads = int(threads or os.environ.get("CONDUCTOR_STT_THREADS")
+                           or default_thread_count())
+        self.language = str(language or os.environ.get("CONDUCTOR_STT_LANGUAGE")
+                            or DEFAULT_LANGUAGE)
+
+    @property
+    def name(self) -> str:
+        return "whisper.cpp %s" % self.model.stem.replace("ggml-", "")
+
+    def available(self):
+        """(ok, reason). The reason names the exact missing piece, with its fix."""
+        if not self.ffmpeg.is_file():
+            return False, "ffmpeg not found at %s (brew install ffmpeg)" % self.ffmpeg
+        if not self.binary.is_file():
+            return False, "whisper-cli not found at %s (brew install whisper-cpp)" % self.binary
+        if not self.model.is_file():
+            return False, (
+                "the speech model is missing at %s — download it with: curl -fL -o %s "
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/%s"
+                % (self.model, self.model, self.model.name)
+            )
+        return True, "%s ready" % self.name
+
+    def _decode(self, workspace: Path, audio: Path, runner) -> Path:
+        """Opus/OGG/M4A -> 16 kHz mono PCM WAV, which is all whisper.cpp reads."""
+        wav = workspace / "audio.wav"
+        cmd = [
+            str(self.ffmpeg), "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(audio), "-vn", "-sn", "-dn", "-map", "0:a:0",
+            "-ac", "1", "-ar", str(WAV_RATE), "-c:a", "pcm_s16le", "-f", "wav", str(wav),
+        ]
+        result = runner(cmd, job_environment(workspace), deadline=DECODE_DEADLINE, cwd=workspace)
+        if result.survivors:
+            raise TranscriptionUnavailable("the decoder left processes behind; refusing the result")
+        if result.timed_out:
+            raise TranscriptionUnavailable("decoding the audio exceeded its deadline")
+        if result.returncode != 0 or not wav.is_file():
+            raise TranscriptionUnavailable(
+                "could not decode that audio (ffmpeg exit %s): %s"
+                % (result.returncode, (result.stderr or "").strip()[:200])
+            )
+        return wav
+
+    @staticmethod
+    def wav_seconds(wav: Path) -> float:
+        """Duration straight from the PCM size — no second probe process."""
+        try:
+            payload = max(0, wav.stat().st_size - 44)   # canonical WAV header
+        except OSError:
+            return 0.0
+        return round(payload / float(WAV_RATE * WAV_BYTES_PER_SAMPLE), 2)
+
+    def run(self, workspace: Path, audio: Path, runner=None) -> Transcript:
+        runner = runner or run_guarded
+        wav = self._decode(workspace, audio, runner)
+        seconds = self.wav_seconds(wav)
+        if seconds > MAX_AUDIO_SECONDS:
+            raise JobRejected(
+                "that note is %.0fs long; this bridge transcribes up to %.0fs"
+                % (seconds, MAX_AUDIO_SECONDS)
+            )
+        stem = workspace / "result"
+        cmd = [
+            str(self.binary), "-m", str(self.model), "-f", str(wav),
+            "-l", self.language, "-t", str(self.threads),
+            "-bo", "1", "-bs", "1",         # greedy: ~2x faster, same text here
+            "-nt", "-np", "-ojf", "-of", str(stem),
+        ]
+        result = runner(cmd, job_environment(workspace),
+                        deadline=deadline_for(seconds), cwd=workspace)
+        if result.survivors:
+            raise TranscriptionUnavailable(
+                "transcription job left processes behind; refusing the result"
+            )
+        if result.timed_out:
+            raise TranscriptionUnavailable(
+                "transcription exceeded its %.0fs deadline and was terminated"
+                % deadline_for(seconds)
+            )
+        if result.returncode != 0:
+            raise TranscriptionUnavailable(
+                "transcription failed (exit %s): %s"
+                % (result.returncode, (result.stderr or "").strip()[:300])
+            )
+        return self._read_result(stem, result, seconds)
+
+    def _read_result(self, stem: Path, result, seconds: float) -> Transcript:
+        """Prefer the JSON the run wrote; fall back to its own stdout."""
+        report = stem.with_suffix(".json")
+        language = None
+        confidence = None
+        text = (result.stdout or "").strip()
+        if report.is_file():
+            try:
+                import json
+                data = json.loads(report.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise TranscriptionUnavailable("unreadable transcription output: %s" % exc)
+            segments = data.get("transcription") or []
+            joined = "".join(str(s.get("text", "")) for s in segments).strip()
+            if joined:
+                text = joined
+            language = ((data.get("result") or {}).get("language")) or None
+            confidence = _mean_token_probability(segments)
+        if not text:
+            raise TranscriptionUnavailable("the audio produced no speech")
+        return Transcript(text, language=language, confidence=confidence,
+                          engine=self.name, audio_seconds=seconds)
+
+
+def transcribe_voice(audio_path, engine=None, workspace_root=None, lock_path=None,
+                     runner=None) -> Transcript:
+    """Transcribe one voice note locally, or refuse with a precise reason.
+
+    Nothing is ever substituted on failure: sending Franco's audio to a service
+    he did not approve would be a far worse outcome than no transcript.
+    """
+    audio_path = Path(audio_path)
+    if not audio_path.is_file():
+        raise JobRejected("audio file not found: %s" % audio_path)
+    engine = engine or WhisperCpp()
+    ok, reason = engine.available()
+    if not ok:
+        raise TranscriptionUnavailable(reason)
+    lock = Path(lock_path) if lock_path else Path(tempfile.gettempdir()) / "conductor-stt.lock"
+    with single_flight(lock):
+        with JobWorkspace(workspace_root) as workspace:
+            local_audio = workspace / ("note" + (audio_path.suffix or ".ogg"))
+            shutil.copy2(str(audio_path), str(local_audio))
+            return engine.run(workspace, local_audio, runner=runner)

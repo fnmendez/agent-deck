@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import html
 import json
 import re
@@ -340,6 +341,60 @@ def media_target(ctx, kind: str, extension: str, stamp=None, token=None) -> Path
     directory = media.media_dir(conductor_dir(ctx), kind, stamp)
     name = "%s-%s%s" % (time.strftime("%H%M%S"), token or secrets.token_hex(3), extension)
     return directory / name
+
+
+# ------------------------------------------------------- voice-note bookkeeping
+# A voice note is executed as a prompt, so "processed twice" is not a duplicate
+# row — it is the conductor carrying out the same order twice. Telegram redelivers
+# an update whenever the bridge restarts mid-turn, so the guard has to be durable.
+# `file_unique_id` is Telegram's own stable identity for a file, which is exactly
+# the key we need.
+def voice_ledger_path(ctx) -> Path:
+    return conductor_dir(ctx) / "inbox" / "audio" / "executed.jsonl"
+
+
+def voice_already_executed(ctx, key: str) -> bool:
+    path = voice_ledger_path(ctx)
+    if not key or not path.is_file():
+        return False
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    if json.loads(line).get("key") == key:
+                        return True
+                except ValueError:
+                    continue            # a torn line is not a match, and not fatal
+    except OSError:
+        return False                    # unreadable ledger must not block the note
+    return False
+
+
+def record_voice_execution(ctx, key: str, path, chars: int) -> None:
+    """Written *before* the prompt is handed over, so a crash cannot re-run it."""
+    ledger = voice_ledger_path(ctx)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    record = {"key": key, "path": str(path), "chars": chars,
+              "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def voice_identity(file_obj, target) -> str:
+    """Telegram's stable file identity, or the content hash when it omits one."""
+    unique = getattr(file_obj, "file_unique_id", None)
+    if unique:
+        return "tg:%s" % unique
+    try:
+        digest = hashlib.sha256(Path(target).read_bytes()).hexdigest()
+    except OSError:
+        return ""
+    return "sha256:%s" % digest
 
 
 # --------------------------------------------------------------- peek refresh
@@ -677,6 +732,86 @@ def register(dp, ctx: dict, is_authorized) -> None:
             return "→ handed to %s" % title
         return "⚠️ could not hand it to %s — it is saved on disk" % title
 
+    async def _deliver_prompt(message, body: str, label: str) -> bool:
+        """Hand a prompt to the conductor and bring its answer back to Telegram.
+
+        This mirrors the bridge's own text path state for state — busy: queue with
+        a reply callback; free: send and wait; delivered but slower than the wait:
+        watch for the reply — so a voice note is answered in the same place, and
+        on the same terms, as the same words typed into the chat.
+        """
+        conductor = ctx["get_default_conductor"]()
+        if conductor is None:
+            await message.answer("[No conductors configured.]")
+            return False
+        profile = conductor["profile"]
+        title = ctx["conductor_session_title"](conductor["name"])
+        if not await ctx["ensure_conductor_running"](conductor["name"], profile):
+            await message.answer("[Could not start the conductor for %s.]" % profile)
+            return False
+
+        started = time.monotonic()
+
+        def _later(prefix: str):
+            async def _reply(response_text: str):
+                elapsed = int(time.monotonic() - started)
+                waited = ("%dm %ds" % (elapsed // 60, elapsed % 60)) if elapsed >= 60 \
+                    else ("%ds" % elapsed)
+                rendered = ctx["md_to_tg_html"](
+                    "%s (waited %s):\n%s" % (prefix, waited, response_text)
+                )
+                for chunk in ctx["split_message"](rendered):
+                    await message.bot.send_message(
+                        message.chat.id, chunk, parse_mode="HTML"
+                    )
+            return _reply
+
+        send = ctx["send_to_conductor"]
+        status = await _in_thread(
+            functools.partial(ctx["get_session_status"], title, profile=profile)
+        )
+        if status in ("running", "active", "starting"):
+            ok, _text, _pending = await _in_thread(functools.partial(
+                send, title, body, profile=profile, wait_for_reply=False,
+                reply_callback=_later("%s reply" % label), force_queue=True,
+            ))
+            if not ok:
+                await message.answer(
+                    "⚠️ could not hand it to %s — the audio is on disk" % title
+                )
+                return False
+            await message.answer(
+                "⏳ %s is busy — queued; the answer will land here." % title
+            )
+            return True
+
+        ok, response, still_running = await _in_thread(functools.partial(
+            send, title, body, profile=profile, wait_for_reply=True,
+            response_timeout=ctx["RESPONSE_TIMEOUT"],
+        ))
+        if not ok:
+            if still_running:
+                # Delivered; the turn simply outran the wait. Re-sending here
+                # would make the conductor act on the same words twice.
+                ctx["_register_pending_reply"](title, profile, _later("%s reply" % label))
+                await message.answer("⏳ still working — the answer will land here.")
+                return True
+            await message.answer(
+                "⚠️ could not hand it to %s — the audio is on disk" % title
+            )
+            return False
+        for chunk in ctx["split_message"](ctx["md_to_tg_html"](response)):
+            await message.answer(chunk, parse_mode="HTML")
+        return True
+
+    async def _refuse_repeat(message, key: str) -> None:
+        """Telegram redelivers updates across a restart; a spoken order must not repeat."""
+        log.info("overlay audio: %s already executed, refusing to repeat it", key)
+        await message.answer(
+            "🎤 Already handled — this exact voice note was acted on before, so it "
+            "was not run again. Send a new note if you want it repeated."
+        )
+
     def _is_audio_document(message) -> bool:
         doc = getattr(message, "document", None)
         if doc is None:
@@ -717,6 +852,15 @@ def register(dp, ctx: dict, is_authorized) -> None:
         await message.answer("🖼 Image saved: %s\n%s" % (target, status))
 
     async def on_audio(message):
+        """A voice note from the authorized operator becomes a prompt he gets answered.
+
+        Authentication (I8) is the bridge's own single-user gate: `is_authorized`
+        admits exactly the one configured Telegram account, so nothing that
+        reaches this function came from anyone else. Correlation (I9) is by
+        construction, not by lookup — the transcript is the stdout of the process
+        that read this file's private copy, so there is no shared history from
+        which the wrong text could be attributed.
+        """
         if not is_authorized(message):
             return
         try:
@@ -725,6 +869,15 @@ def register(dp, ctx: dict, is_authorized) -> None:
         except media.MediaRejected as exc:
             await message.answer("⚠️ %s" % exc)
             return
+        # Telegram's own file identity is known before the download, so a
+        # redelivered note is refused without fetching a second copy of it.
+        unique = getattr(file_obj, "file_unique_id", None)
+        if unique and await _in_thread(
+            functools.partial(voice_already_executed, ctx, "tg:%s" % unique)
+        ):
+            await _refuse_repeat(message, "tg:%s" % unique)
+            return
+
         extension = media.safe_extension(mime, name, media.AUDIO_EXTENSIONS, ".ogg")
         target = media_target(ctx, "audio", extension)
         try:
@@ -739,10 +892,22 @@ def register(dp, ctx: dict, is_authorized) -> None:
             target.unlink(missing_ok=True)
             await message.answer("⚠️ that audio is over the size limit for this bridge")
             return
+
+        # Without a Telegram id the content hash is the identity, and that needs
+        # the bytes — so this second check is the one that catches those.
+        key = voice_identity(file_obj, target)
+        if key and not unique and await _in_thread(
+            functools.partial(voice_already_executed, ctx, key)
+        ):
+            target.unlink(missing_ok=True)
+            await _refuse_repeat(message, key)
+            return
+
+        await message.answer("🎤 transcribing locally…")
         try:
-            transcript = await _in_thread(
+            result = await _in_thread(
                 functools.partial(
-                    transcribe.transcribe_file, target,
+                    transcribe.transcribe_voice, target,
                     workspace_root=conductor_dir(ctx) / "inbox" / "jobs",
                     lock_path=conductor_dir(ctx) / "inbox" / "stt.lock",
                 )
@@ -752,17 +917,48 @@ def register(dp, ctx: dict, is_authorized) -> None:
             await message.answer(
                 "🎤 Voice note saved: %s\n"
                 "⚠️ Not transcribed — %s\n"
-                "The audio file is on disk; nothing was sent to any other service."
+                "The audio is on disk; nothing was sent to any other service."
                 % (target, exc)
             )
             return
-        body = media.describe_audio(target, transcript, getattr(message, "caption", "") or "", meta)
-        log.info("overlay audio: %s -> transcript of %d chars", target, len(transcript))
-        status = await _route_to_conductor(message, body)
-        await message.answer(
-            "🎤 Voice note transcribed (%d chars): %s\n%s"
-            % (len(transcript), target, status)
+
+        provenance = result.provenance()
+        log.info("overlay audio: %s -> %d chars (%s)", target, len(result.text), provenance)
+        await _reply_long(
+            message,
+            "🎤 <b>Heard:</b> %s\n<i>%s</i>" % (html.escape(result.text), html.escape(provenance)),
+            parse_mode="HTML",
         )
+
+        confidence = result.confidence
+        if confidence is not None and confidence < transcribe.MIN_CONFIDENCE:
+            # Too garbled to act on. Showing it and stopping is the fail-closed
+            # branch: a half-heard sentence is a different instruction.
+            log.info("overlay audio: confidence %.2f below floor, not executed", confidence)
+            await message.answer(
+                "⚠️ That came through too unclearly to act on (confidence %.2f). "
+                "Nothing was run — resend it or type what you meant." % confidence
+            )
+            return
+
+        body = media.voice_prompt(
+            target, result.text, provenance, getattr(message, "caption", "") or ""
+        )
+        if key:
+            # Recorded before the hand-off: a crash mid-delivery must not let the
+            # same words be executed again on the redelivered update.
+            try:
+                await _in_thread(
+                    functools.partial(record_voice_execution, ctx, key, target, len(result.text))
+                )
+            except OSError as exc:
+                log.error("overlay audio: could not record %s in the ledger: %s", key, exc)
+                await message.answer(
+                    "⚠️ Could not record this note as handled, so it was not run — "
+                    "acting on it would risk doing it twice. (%s)" % exc.__class__.__name__
+                )
+                return
+        await _deliver_prompt(message, body, "🎤 voice")
 
     async def on_peek_refresh(callback):
         """Refresh a /peek snapshot in place, re-validating the target each press."""
