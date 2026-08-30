@@ -381,3 +381,19 @@ class QueuedReplyFreshness(unittest.TestCase):
         asyncio.run(wrapped("[STATUS] stale"))
         self.assertNotIn("stale", got[0])
         self.assertIn("No fresh reply", got[0])
+
+
+class QueuedVoiceStartsTheDrain(VoiceChannel):
+    def test_a_queued_note_starts_the_drain_on_the_loop(self):
+        kicked = []
+        self.status = "running"
+        self.send_result = (True, "", False)
+        handlers = self._register()
+        self.ctx["_ensure_drain_task"] = lambda: kicked.append(True)
+        real = t.transcribe_voice
+        t.transcribe_voice = lambda path, **kw: self.transcript
+        try:
+            asyncio.run(handlers["on_audio"](self._message()))
+        finally:
+            t.transcribe_voice = real
+        self.assertEqual(kicked, [True], "the drain must be started from the loop thread")

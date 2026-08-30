@@ -841,6 +841,15 @@ def register(dp, ctx: dict, is_authorized) -> None:
                     "⚠️ could not hand it to %s — the audio is on disk" % title
                 )
                 return False
+            # The enqueue above ran on a worker thread, where the bridge's
+            # `_ensure_drain_task` finds no running loop and only *defers* the
+            # drain. Deferred means "until some later enqueue from the loop
+            # thread" — which on 2026-08-29 was three hours. Start it here, on
+            # the loop, so a queued voice note is delivered as soon as the
+            # conductor is free.
+            ensure_drain = ctx.get("_ensure_drain_task")
+            if ensure_drain is not None:
+                ensure_drain()
             await message.answer(
                 "⏳ %s is busy — queued; the answer will land here." % title
             )
