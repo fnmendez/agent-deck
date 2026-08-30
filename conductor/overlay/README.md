@@ -77,9 +77,9 @@ one. So the channel is built around four properties rather than around accuracy:
 
 | | Property | How it holds |
 |---|---|---|
-| I8 | Only he can open it | The bridge's own single-user gate. `on_audio` returns before downloading anything for any other sender. |
+| I8 | Only he can open it, and only when he is the author | The bridge's own single-user gate: `on_audio` returns before downloading anything for any other sender. That gate answers who *sent* the note, though, not who *recorded* it — so a note carrying any forwarding marker (`forward_origin`, the legacy `forward_*` fields, `is_automatic_forward`, `via_bot`, `sender_chat`) is transcribed and answered, but delivered behind the untrusted fence. A stranger's words are never run as his instruction. |
 | I9 | The text provably belongs to *this* file | The transcript is the stdout/JSON of the process that read this file's private copy. There is no shared history to attribute from — the failure mode is absent by construction, not guarded against. |
-| I10 | A mishearing cannot act on its own | The prompt carries a standing rule: restate and confirm before anything irreversible or outward-facing. Below `MIN_CONFIDENCE` the note is shown but never executed. A redelivered note is refused (durable ledger keyed by Telegram's `file_unique_id`). |
+| I10 | A mishearing cannot act on its own | The prompt carries a standing rule: restate and confirm before anything irreversible or outward-facing. Below `MIN_CONFIDENCE` the note is shown but never executed. A redelivered note is refused (durable ledger keyed by Telegram's `file_unique_id`, content hash when Telegram omits one). The ledger guards *execution* only, so re-forwarding a third party's note is not refused — nothing is being run. |
 | I11 | The conductor knows what it is reading | Every prompt carries its provenance line: engine, audio length, detected language, mean token confidence. |
 
 Franco also sees the transcript in Telegram before the answer arrives, so a
