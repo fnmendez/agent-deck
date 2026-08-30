@@ -385,6 +385,25 @@ def record_voice_execution(ctx, key: str, path, chars: int) -> None:
         os.fsync(handle.fileno())
 
 
+# The authorization gate answers "who sent this to the bot", which is not the
+# same question as "who recorded it". A note Franco forwards from a group or a
+# third party passes that gate, and executing it would run a stranger's words as
+# his instruction in a session that asks no permissions. Anything carrying a hint
+# of forwarding is therefore delivered as data, never as a command.
+FORWARD_MARKERS = (
+    "forward_origin",          # Bot API 7.0+
+    "forward_from", "forward_from_chat", "forward_sender_name", "forward_date",
+    "is_automatic_forward",
+    "via_bot",                 # composed through another bot, not by him
+    "sender_chat",             # sent on behalf of a channel, not by a person
+)
+
+
+def is_forwarded(message) -> bool:
+    """True when the authenticated sender is not necessarily the author."""
+    return any(getattr(message, marker, None) for marker in FORWARD_MARKERS)
+
+
 def voice_identity(file_obj, target) -> str:
     """Telegram's stable file identity, or the content hash when it omits one."""
     unique = getattr(file_obj, "file_unique_id", None)
@@ -869,10 +888,12 @@ def register(dp, ctx: dict, is_authorized) -> None:
         except media.MediaRejected as exc:
             await message.answer("⚠️ %s" % exc)
             return
-        # Telegram's own file identity is known before the download, so a
-        # redelivered note is refused without fetching a second copy of it.
+        # Exactly-once guards *execution*, so it applies only to the path that
+        # executes: re-forwarding a third party's note is harmless repetition of
+        # data, and refusing it would be a gate with nothing behind it.
+        forwarded = is_forwarded(message)
         unique = getattr(file_obj, "file_unique_id", None)
-        if unique and await _in_thread(
+        if not forwarded and unique and await _in_thread(
             functools.partial(voice_already_executed, ctx, "tg:%s" % unique)
         ):
             await _refuse_repeat(message, "tg:%s" % unique)
@@ -896,7 +917,7 @@ def register(dp, ctx: dict, is_authorized) -> None:
         # Without a Telegram id the content hash is the identity, and that needs
         # the bytes — so this second check is the one that catches those.
         key = voice_identity(file_obj, target)
-        if key and not unique and await _in_thread(
+        if key and not forwarded and not unique and await _in_thread(
             functools.partial(voice_already_executed, ctx, key)
         ):
             target.unlink(missing_ok=True)
@@ -929,6 +950,21 @@ def register(dp, ctx: dict, is_authorized) -> None:
             "🎤 <b>Heard:</b> %s\n<i>%s</i>" % (html.escape(result.text), html.escape(provenance)),
             parse_mode="HTML",
         )
+
+        if forwarded:
+            # Transcribed, delivered, answered — but as data behind the fence,
+            # because the voice on it is not the voice the gate authenticated.
+            log.info("overlay audio: %s is forwarded, delivering as data", target)
+            body = media.describe_audio(
+                target, result.text, getattr(message, "caption", "") or "",
+                meta, provenance,
+            )
+            await message.answer(
+                "↪️ Forwarded note — handed over as data, not run as an instruction: "
+                "whoever recorded it is not necessarily you."
+            )
+            await _deliver_prompt(message, body, "↪️ forwarded voice")
+            return
 
         confidence = result.confidence
         if confidence is not None and confidence < transcribe.MIN_CONFIDENCE:
