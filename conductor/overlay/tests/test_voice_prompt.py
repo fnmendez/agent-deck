@@ -197,6 +197,16 @@ class EngineResults(unittest.TestCase):
 class VoiceJob(unittest.TestCase):
     """transcribe_voice: correlation by construction, and no fallback ever."""
 
+    @staticmethod
+    def _installed(tmp):
+        """A stand-in installation, so the test does not need the host to have one."""
+        paths = {}
+        for name in ("ffmpeg", "whisper-cli", "model.bin"):
+            path = Path(tmp) / name
+            path.write_text("stand-in")
+            paths[name] = path
+        return paths
+
     def test_the_engine_reads_the_workspace_copy_not_the_inbox_file(self):
         seen = {}
 
@@ -213,8 +223,9 @@ class VoiceJob(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "note.ogg"
             audio.write_bytes(b"audio-bytes")
-            engine = t.WhisperCpp(binary="/usr/local/bin/whisper-cli",
-                                  ffmpeg="/usr/local/bin/ffmpeg", model=audio)
+            installed = self._installed(tmp)
+            engine = t.WhisperCpp(binary=installed["whisper-cli"], ffmpeg=installed["ffmpeg"],
+                                  model=installed["model.bin"])
             result = t.transcribe_voice(audio, engine=engine, workspace_root=tmp,
                                         lock_path=Path(tmp) / "l", runner=runner)
         self.assertEqual(result.text, "hola")
@@ -238,8 +249,9 @@ class VoiceJob(unittest.TestCase):
             audio = Path(tmp) / "a.ogg"
             audio.write_bytes(b"x")
             lock = Path(tmp) / "l"
-            engine = t.WhisperCpp(binary="/usr/local/bin/whisper-cli",
-                                  ffmpeg="/usr/local/bin/ffmpeg", model=audio)
+            installed = self._installed(tmp)
+            engine = t.WhisperCpp(binary=installed["whisper-cli"], ffmpeg=installed["ffmpeg"],
+                                  model=installed["model.bin"])
             with t.single_flight(lock):
                 with self.assertRaises(t.JobRejected):
                     t.transcribe_voice(audio, engine=engine, workspace_root=tmp,
