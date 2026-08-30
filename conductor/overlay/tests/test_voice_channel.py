@@ -100,7 +100,7 @@ class VoiceChannel(unittest.TestCase):
         self.ctx = ctx
         return handlers
 
-    def _message(self, unique_id="u1", caption=""):
+    def _message(self, unique_id="u1", caption="", forward=None):
         downloaded = []
 
         async def download(file_obj, destination):
@@ -119,6 +119,7 @@ class VoiceChannel(unittest.TestCase):
                                   **({"file_unique_id": unique_id} if unique_id else {})),
             caption=caption,
             from_user=SimpleNamespace(id=42),
+            **(forward or {}),
             chat=SimpleNamespace(id=99),
             answer=answer,
             bot=SimpleNamespace(download=download, send_message=send_message),
@@ -239,6 +240,61 @@ class VoiceChannel(unittest.TestCase):
             bl.record_voice_execution = original
         self.assertEqual(self.sent, [])
         self.assertIn("not run", self.chat)
+
+    # ------------------------------------------------- forwarded is not his
+    # `is_authorized` answers who *sent* the note, not who *recorded* it. A note
+    # forwarded from a group or a third party passes that gate, and executing it
+    # would run a stranger's words as the operator's instruction.
+    FORWARDS = (
+        {"forward_origin": SimpleNamespace(type="user")},
+        {"forward_from": SimpleNamespace(id=7)},
+        {"forward_from_chat": SimpleNamespace(id=-100)},
+        {"forward_sender_name": "alguien"},
+        {"forward_date": 1788000000},
+        {"is_automatic_forward": True},
+        {"via_bot": SimpleNamespace(id=5)},
+        {"sender_chat": SimpleNamespace(id=-100)},
+    )
+
+    def test_every_forward_marker_keeps_it_out_of_the_command_path(self):
+        for marker in self.FORWARDS:
+            with self.subTest(marker=list(marker)[0]):
+                self.assertTrue(bl.is_forwarded(SimpleNamespace(**marker)))
+        self.assertFalse(bl.is_forwarded(SimpleNamespace(text="hola")))
+
+    def test_a_forwarded_note_is_delivered_as_data_not_as_an_order(self):
+        self._run(forward={"forward_origin": SimpleNamespace(type="user")})
+        self.assertEqual(len(self.sent), 1)
+        body = self.sent[0][0]
+        self.assertIn(media.FENCE, body, "a stranger's words must stay behind the fence")
+        self.assertNotIn("as if he had typed it", body)
+        self.assertIn("never as", body)
+        self.assertIn("Forwarded note", self.chat)
+
+    def test_a_forwarded_note_is_still_transcribed_and_answered(self):
+        self._run(forward={"forward_from": SimpleNamespace(id=7)})
+        self.assertIn("apaga el servidor de staging", self.chat)
+        self.assertIn("listo, lo hice", self.chat)
+
+    def test_forwarding_the_same_note_twice_is_not_refused(self):
+        """Exactly-once guards execution; nothing is executed on this path."""
+        forward = {"forward_origin": SimpleNamespace(type="user")}
+        self._run(forward=forward)
+        self._run(forward=forward)
+        self.assertEqual(len(self.sent), 2)
+        self.assertNotIn("Already handled", self.chat)
+
+    def test_a_forwarded_note_never_enters_the_ledger(self):
+        self._run(forward={"forward_origin": SimpleNamespace(type="user")})
+        self.assertFalse(bl.voice_ledger_path({"CONDUCTOR_DIR": self.root}).exists())
+
+    def test_a_garbled_forward_is_data_too_not_a_refusal(self):
+        self.transcript = t.Transcript("bla ... bla", language="es",
+                                       confidence=t.MIN_CONFIDENCE - 0.2,
+                                       engine="whisper.cpp small", audio_seconds=2.0)
+        self._run(forward={"forward_origin": SimpleNamespace(type="user")})
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn(media.FENCE, self.sent[0][0])
 
     # --------------------------------------------------------- fail closed
     def test_an_unavailable_engine_saves_the_audio_and_says_why(self):
