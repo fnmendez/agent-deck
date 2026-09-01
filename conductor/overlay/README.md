@@ -93,67 +93,39 @@ authorized, so run it" is answering the wrong question.
 Franco also sees the transcript in Telegram before the answer arrives, so a
 mishearing is visible to him and not only to the conductor.
 
-### The engine, and why this one
+### The engine: the shared `transcribe` CLI
 
-`whisper.cpp` (Homebrew `whisper-cpp`) with `ggml-small.bin`, fed by `ffmpeg`.
-Two plain CLI binaries: no GUI, no clipboard, no Accessibility, no microphone,
-no network, no TCC prompt — which is what lets a launchd-run bridge use it at
-all. Measured on this machine (M1 Max, x86 binaries under Rosetta, SSE4.2
-backend) against a real 7.9 s Spanish voice note:
+Transcription is delegated to the `transcribe` tool from **fnmendez/transcribe**
+(Franco's decision: one engine for every agent, not a private copy per bridge).
+The tool owns the whole risky part — whisper.cpp arm64+Metal with the Ultra
+local model, `sandbox-exec` network denial, a strict environment allowlist,
+single-flight locking, deadlines, and the zero-survivors guarantee — and its
+own test suite pins those invariants. `transcribe.py` here is only an adapter:
+it resolves the CLI, runs `transcribe --json --quiet -- <file>`, and maps the
+result onto the API the bridge speaks.
 
-| model | decoding | wall clock | × real time |
-|---|---|---|---|
-| small | greedy, `-l es` | 8.1 s | 1.0× |
-| small | greedy, `-l auto` | 13.6 s | 1.7× |
-| small | beam 5, `-l auto` | 20.1 s | 2.6× |
-| large-v3-turbo | greedy, `-l auto` | 55.7 s | 7.1× |
+Binary resolution, in order — chosen so the channel survives the tool's PR
+merging (linked worktrees are removed after merge):
 
-All four produced the same, correct text, so `small` + greedy is the honest
-choice: `large-v3-turbo` costs 7× real time for no gain here, which would put a
-one-minute note past seven minutes. The two engines that would have been faster
-are ruled out by the machine, not by preference:
+1. `transcribe` on `PATH`
+2. `~/.local/bin/transcribe` (created by `make install` in the tool repo)
+3. the development worktree binary, with a logged warning — dev fallback only
 
-* **Apple's on-device Speech (macOS 26)** needs the macOS 26 SDK. The installed
-  Command Line Tools are 13.3 (Swift 5.8, SDK 13.3) and there is no `metal`
-  compiler, so it cannot be built here without a multi-GB toolchain upgrade —
-  and it would still need a Speech Recognition TCC grant that a launchd job
-  cannot be relied on to obtain.
-* **mlx-whisper** requires a native arm64 Python. The only Homebrew on this
-  machine is the x86 prefix at `/usr/local`, running under Rosetta.
+If none exists the adapter fails closed and the Telegram reply names the exact
+fix. Exit codes map to distinct refusals: `7` is "another job is already
+running" (single-flight, not a failure), `3` carries the tool's own
+install/model fix verbatim, `4`/`5` reject the input or report the deadline,
+`6` discards a survivor-tainted result, anything else is reported with the
+stderr tail. A result that does not claim `isolated` and `network_denied` is
+refused even on rc 0. The adapter never passes `--allow-fallback`: nothing is
+ever substituted on failure, because sending Franco's audio to a service he did
+not approve would be a far worse outcome than no transcript.
 
-The Superwhisper *app* remains out of bounds for the reason it always was: it is
-one shared GUI process with `autoPasteEnabled = 1`, so a bridge job could paste
-into whatever Franco has focused, and "the last history entry" can be a private
-dictation of his rather than this note. `assert_safe_command` refuses `open`,
-`osascript`, `pbcopy` and friends outright, so that path cannot be reintroduced
-by a later edit.
-
-Model resolution, in order: `CONDUCTOR_STT_MODEL`, then
-`<conductor>/stt-models/ggml-small.bin`. Also honoured:
-`CONDUCTOR_STT_WHISPER`, `CONDUCTOR_STT_FFMPEG`, `CONDUCTOR_STT_THREADS`,
-`CONDUCTOR_STT_LANGUAGE`. Install:
-
-```sh
-brew install whisper-cpp ffmpeg
-mkdir -p ~/.local/share/agent-deck/conductor/stt-models
-curl -fL -o ~/.local/share/agent-deck/conductor/stt-models/ggml-small.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
-```
-
-Nothing is ever substituted on failure. If any piece is missing the reply names
-exactly which one and how to fix it, the audio stays on disk, and no prompt is
-delivered — sending Franco's audio to a service he did not approve would be a
-far worse outcome than no transcript.
-
-`canary_isolation.py` proves the isolation on a real machine (`--simulate` runs a
-live stand-in engine through the same guard):
-
-```
-PASS frontmost app unchanged          PASS live database untouched
-PASS clipboard untouched              PASS no job workspace left behind
-PASS same superwhisper pids           PASS no stand-in engine descendants left
-PASS no superwhisper restart          PASS no extra superwhisper process
-```
+What stays on this side of the boundary, because it is not the tool's job: the
+authorship fence and forwarding rule (I8), the bounded download, the
+exactly-once execution ledger (I10), and the prompt framing with provenance
+(I11). Measured through the adapter on this machine: a real 15.2 s Spanish
+note in 6.0 s (2.5× faster than real time) with the Ultra local large model.
 
 ## Telegram commands added by `bridge_local.py`
 | Command | Behaviour |
