@@ -43,8 +43,7 @@ jobs:
           python -m py_compile conductor/overlay/bridge_local.py \
                                conductor/overlay/delivery.py \
                                conductor/overlay/media.py \
-                               conductor/overlay/transcribe.py \
-                               conductor/overlay/canary_isolation.py
+                               conductor/overlay/transcribe.py
       - name: Shell syntax check
         timeout-minutes: 2
         run: bash -n conductor/overlay/reapply.sh
@@ -52,13 +51,13 @@ jobs:
         timeout-minutes: 5
         working-directory: conductor/overlay
         run: python -m unittest tests.test_bridge_local tests.test_media_and_peek -v
-      # Isolation guarantees for transcription jobs: no GUI/clipboard/paste entry
-      # point, private state, single-flight, and no surviving descendants. These
-      # spawn real processes, so they must run on a real runner rather than be mocked.
-      - name: Transcription isolation suite
+      # The transcribe.py adapter: CLI resolution order, fail-closed refusals,
+      # and the exit-code mapping. The engine's own isolation guarantees are
+      # pinned by the fnmendez/transcribe suite, not here.
+      - name: Transcription adapter suite
         timeout-minutes: 8
         working-directory: conductor/overlay
-        run: python -m unittest tests.test_transcribe_isolation -v
+        run: python -m unittest tests.test_transcribe_adapter -v
       # The voice channel is a command path, not an attachment path: these cover
       # authentication, exactly-once execution, the fail-closed branches, and the
       # round trip that returns the conductor's answer to Telegram.
