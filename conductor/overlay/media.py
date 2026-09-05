@@ -166,18 +166,14 @@ def describe_audio(path, transcript: str, caption: str, meta: dict,
 # recognition mishears, and a misheard word is a different order. The prompt
 # therefore carries its own provenance and the standing rule that anything
 # irreversible gets restated and confirmed before it happens.
+# Franco asked for a minimal preamble (2026-09-04). The dictation-safety rule
+# that used to live here - restate and confirm before anything irreversible
+# when a transcript may be misheard - is NOT encoded in the prompt any more.
+# It belongs in the conductor's own standing instructions, so that a freshly
+# cycled session still has it; a per-message preamble was the wrong home for a
+# standing rule.
 VOICE_PROMPT = """\
-A voice message from the operator arrived over Telegram and was transcribed
-locally. The text between the markers is him speaking to you: treat it as his
-message, exactly as if he had typed it.
-
-Two things are different from typed text, and both matter:
-* He dictated it, and speech recognition mishears words. A misheard word is a
-  different instruction. Before doing anything irreversible or outward-facing
-  because of this message, restate what you understood and ask him to confirm.
-  Do not act first and check later.
-* If a passage is garbled, or the confidence below is low, ask him rather than
-  guessing what he meant.
+A voice message from the operator arrived over Telegram.
 
 %s
 audio file: %s

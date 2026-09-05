@@ -33,11 +33,18 @@ class PromptFraming(unittest.TestCase):
         self.assertNotIn(media.FENCE, self.PROMPT)
 
     def test_it_says_the_words_are_his_and_should_be_acted_on(self):
-        self.assertIn("as if he had typed it", self.PROMPT)
+        # The framing is now carried by the one-line preamble plus the absence
+        # of the untrusted fence: his words are his, not third-party data.
+        self.assertIn("from the operator", self.PROMPT)
+        self.assertNotIn(media.FENCE, self.PROMPT)
 
-    def test_it_carries_the_standing_confirmation_rule(self):
-        self.assertIn("irreversible", self.PROMPT)
-        self.assertIn("ask him to confirm", self.PROMPT)
+    def test_the_preamble_stays_minimal(self):
+        """Franco asked for a minimal preamble: the dictation-safety rule now
+        lives in the conductor's standing instructions, not in every message."""
+        self.assertNotIn("irreversible", self.PROMPT)
+        self.assertNotIn("ask him to confirm", self.PROMPT)
+        header = self.PROMPT.split("---")[0]
+        self.assertLessEqual(len(header.strip().splitlines()), 5, header)
 
     def test_it_carries_provenance_and_the_audio_path(self):
         self.assertIn("whisper.cpp small", self.PROMPT)
