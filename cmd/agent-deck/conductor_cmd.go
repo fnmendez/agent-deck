@@ -74,6 +74,11 @@ func runAutoMigration(jsonOutput bool) {
 		fmt.Fprintf(os.Stderr, "Warning: policy migration check failed: %v\n", err)
 	}
 
+	migratedVoiceRule, err := session.MigrateConductorPolicyVoiceRule()
+	if err != nil && !jsonOutput {
+		fmt.Fprintf(os.Stderr, "Warning: voice-safety policy migration failed: %v\n", err)
+	}
+
 	migratedLearnings, err := session.MigrateConductorLearnings()
 	if err != nil && !jsonOutput {
 		fmt.Fprintf(os.Stderr, "Warning: learnings migration check failed: %v\n", err)
@@ -90,6 +95,9 @@ func runAutoMigration(jsonOutput bool) {
 		}
 		for _, name := range migratedPolicy {
 			fmt.Printf("  [migrated] Updated policy split: %s\n", name)
+		}
+		for _, path := range migratedVoiceRule {
+			fmt.Printf("  [migrated] Added the voice-safety rule to %s\n", path)
 		}
 		for _, name := range migratedLearnings {
 			fmt.Printf("  [migrated] Added learnings: %s\n", name)

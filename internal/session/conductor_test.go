@@ -1418,20 +1418,20 @@ func TestCreateSymlinkWithExpansion_MissingSourceError(t *testing.T) {
 // --- Policy MD tests ---
 
 func TestInstallPolicyMD_Default(t *testing.T) {
+	// An isolated HOME, not the developer's own. InstallPolicyMD preserves an
+	// existing POLICY.md, so a stale one on this machine would make the
+	// content assertions below fail against a file this test never wrote --
+	// a false regression. Preservation is covered separately by
+	// TestInstallPolicyMD_PreservesEditedRegularFile.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+
 	conductorDir, err := ConductorDir()
 	if err != nil {
 		t.Fatalf("ConductorDir: %v", err)
 	}
 	policyPath := filepath.Join(conductorDir, "POLICY.md")
-
-	// Backup existing file if present
-	var backup []byte
-	if content, err := os.ReadFile(policyPath); err == nil {
-		backup = content
-		defer func() { _ = os.WriteFile(policyPath, backup, 0o644) }()
-	} else {
-		defer os.Remove(policyPath)
-	}
 
 	// Test installing default template
 	if err := InstallPolicyMD(""); err != nil {
@@ -1478,6 +1478,116 @@ func TestInstallPolicyMD_Default(t *testing.T) {
 	}
 	if strings.Contains(string(content), "Heartbeat Response Format") {
 		t.Error("POLICY.md should NOT contain Heartbeat Response Format (it's a bridge protocol, belongs in CLAUDE.md)")
+	}
+}
+
+func TestMigrateConductorPolicyVoiceRule(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+
+	base, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "slavna"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// A policy that predates the rule, with a hand edit that must survive.
+	edited := "# Conductor Policy\n\n## Core Rules\n\n1. **My own rule.** Keep it.\n"
+	shared := filepath.Join(base, "POLICY.md")
+	perConductor := filepath.Join(base, "slavna", "POLICY.md")
+	for _, path := range []string{shared, perConductor} {
+		if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", path, err)
+		}
+	}
+
+	migrated, err := MigrateConductorPolicyVoiceRule()
+	if err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	if len(migrated) != 2 {
+		t.Fatalf("expected both policies migrated, got %v", migrated)
+	}
+	for _, path := range []string{shared, perConductor} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(content), conductorVoiceSafetyMarker) {
+			t.Errorf("%s did not gain the voice-safety rule", path)
+		}
+		if !strings.Contains(string(content), "My own rule") {
+			t.Errorf("%s lost the user's own content; the migration must only append", path)
+		}
+	}
+
+	// Idempotent: a second run changes nothing.
+	before, _ := os.ReadFile(shared)
+	again, err := MigrateConductorPolicyVoiceRule()
+	if err != nil {
+		t.Fatalf("second migration: %v", err)
+	}
+	if len(again) != 0 {
+		t.Errorf("second run migrated %v; it should be a no-op", again)
+	}
+	after, _ := os.ReadFile(shared)
+	if string(before) != string(after) {
+		t.Error("a second migration rewrote the file")
+	}
+}
+
+func TestMigrateConductorPolicyVoiceRule_SkipsSymlinks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+
+	base, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "my-policy.md")
+	if err := os.WriteFile(target, []byte("# Mine\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	link := filepath.Join(base, "POLICY.md")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	migrated, err := MigrateConductorPolicyVoiceRule()
+	if err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	if len(migrated) != 0 {
+		t.Errorf("a symlinked policy is the user pointing at their own file; got %v", migrated)
+	}
+	content, _ := os.ReadFile(target)
+	if string(content) != "# Mine\n" {
+		t.Errorf("the symlink target was modified: %q", string(content))
+	}
+}
+
+func TestVoiceSafetyRuleIsInBothTheTemplateAndTheMigration(t *testing.T) {
+	// The default template and the migration section are separate strings, so
+	// they can drift. If they do, new installs and upgraded ones end up with
+	// different rules -- or one of them with none.
+	for _, want := range []string{
+		conductorVoiceSafetyMarker,
+		"irreversible or outward-facing",
+		"restate what you understood",
+	} {
+		if !strings.Contains(conductorPolicyTemplate, want) {
+			t.Errorf("the policy template is missing %q", want)
+		}
+		if !strings.Contains(conductorVoiceSafetyPolicySection, want) {
+			t.Errorf("the migration section is missing %q", want)
+		}
 	}
 }
 

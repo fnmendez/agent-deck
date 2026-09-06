@@ -239,6 +239,29 @@ Orchestration patterns learned from experience. Review at startup and before hea
 ---
 `
 
+// conductorVoiceSafetyMarker identifies the dictation-safety rule inside a
+// POLICY.md. Voice notes reach a conductor as executable prompts and the
+// per-message preamble deliberately no longer carries this rule, so a
+// POLICY.md without the marker is an installation where a misheard word can
+// act with no confirmation step anywhere.
+const conductorVoiceSafetyMarker = "speech recognition mishears"
+
+// conductorVoiceSafetyPolicySection is appended to a POLICY.md that predates
+// the rule. InstallPolicyMD preserves an existing POLICY.md, so upgraded
+// installations would otherwise never receive it -- the rule would ship for
+// new conductors only, which is precisely the population that was not at
+// risk. Appending, rather than rewriting, is what makes this safe to run
+// against a file the user has edited.
+const conductorVoiceSafetyPolicySection = `
+## Voice Messages
+
+Voice messages were dictated, and speech recognition mishears. A misheard word
+is a different instruction. Before doing anything irreversible or outward-facing
+because of a voice message, restate what you understood and ask the user to
+confirm. Do not act first and check later. If a passage is garbled, or its
+transcript confidence is low, ask rather than guessing what he meant.
+`
+
 // conductorPolicyTemplate is the default POLICY.md written to ~/.agent-deck/conductor/POLICY.md.
 // It contains agent behavior rules (auto-response policy, escalation guidelines, response style).
 // Per-conductor overrides can be placed at ~/.agent-deck/conductor/<name>/POLICY.md.
