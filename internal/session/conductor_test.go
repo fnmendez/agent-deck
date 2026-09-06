@@ -1458,6 +1458,21 @@ func TestInstallPolicyMD_Default(t *testing.T) {
 	if !strings.Contains(string(content), "Core Rules") {
 		t.Error("POLICY.md should contain Core Rules")
 	}
+
+	// The voice channel delivers a deliberately minimal preamble, so the
+	// dictation-safety rule has to live here instead: a freshly started or
+	// cycled conductor must still be told that a transcript can be misheard
+	// and that irreversible or outward-facing action needs confirmation
+	// first. Without this the rule exists nowhere.
+	for _, want := range []string{
+		"speech recognition mishears",
+		"irreversible or outward-facing",
+		"restate what you understood",
+	} {
+		if !strings.Contains(string(content), want) {
+			t.Errorf("POLICY.md should carry the dictation-safety rule (missing %q)", want)
+		}
+	}
 	if !strings.Contains(string(content), "Auto-Response Guidelines") {
 		t.Error("POLICY.md should contain Auto-Response Guidelines")
 	}

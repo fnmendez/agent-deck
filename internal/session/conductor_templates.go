@@ -255,6 +255,7 @@ This file can be overridden per conductor by placing a POLICY.md in the conducto
 4. **Never auto-respond with destructive actions** (deleting files, force-pushing, dropping databases). Always escalate those.
 5. **Never send messages to running sessions.** Only respond to sessions in "waiting" status.
 6. **Log everything.** Every action you take goes in ` + "`" + `./task-log.md` + "`" + `.
+7. **Voice messages were dictated, and speech recognition mishears.** A misheard word is a different instruction. Before doing anything irreversible or outward-facing because of a voice message, restate what you understood and ask the user to confirm. Do not act first and check later. If a passage is garbled, or its transcript confidence is low, ask rather than guessing what he meant.
 
 ## Auto-Response Guidelines
 
@@ -274,6 +275,7 @@ This file can be overridden per conductor by placing a POLICY.md in the conducto
 - "Should I deploy to production?"
 - "I'm stuck and don't know how to proceed"
 - Any question about business logic or design decisions
+- A voice message asking for anything irreversible or outward-facing -> restate what you understood and confirm before acting
 
 ### When Unsure
 If you're not sure whether to auto-respond, **escalate**. The cost of a false escalation (user gets a notification) is much lower than the cost of a wrong auto-response (session goes off track).
