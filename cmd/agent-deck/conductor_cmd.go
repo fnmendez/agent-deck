@@ -75,8 +75,18 @@ func runAutoMigration(jsonOutput bool) {
 	}
 
 	migratedVoiceRule, err := session.MigrateConductorPolicyVoiceRule()
-	if err != nil && !jsonOutput {
-		fmt.Fprintf(os.Stderr, "Warning: voice-safety policy migration failed: %v\n", err)
+	if err != nil {
+		// Unconditional, unlike the migrations above: the others leave a
+		// cosmetic gap, this one leaves a conductor whose POLICY.md has no
+		// dictation-safety rule while the voice preamble no longer carries
+		// one either. stderr does not corrupt JSON on stdout, so this is
+		// reported in both modes rather than vanishing in one.
+		fmt.Fprintf(os.Stderr,
+			"Warning: voice-safety policy migration failed: %v\n"+
+				"  A conductor whose POLICY.md predates this rule can act on a misheard\n"+
+				"  voice instruction without confirming it first. Add the 'Voice Messages'\n"+
+				"  section to ~/.agent-deck/conductor/POLICY.md by hand, or re-run setup.\n",
+			err)
 	}
 
 	migratedLearnings, err := session.MigrateConductorLearnings()

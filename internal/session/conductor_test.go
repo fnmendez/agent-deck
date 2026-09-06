@@ -1539,6 +1539,119 @@ func TestMigrateConductorPolicyVoiceRule(t *testing.T) {
 	}
 }
 
+func TestMigrateConductorPolicyVoiceRule_PartialRuleStillMigrates(t *testing.T) {
+	// A policy can contain the phrase without the instruction that gives it
+	// force. Detecting the rule by a prose fragment counted that as migrated
+	// and skipped it, leaving the rule half-present.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+	base, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(base, "POLICY.md")
+	partial := "# Policy\n\nNote that speech recognition mishears sometimes.\n"
+	if err := os.WriteFile(path, []byte(partial), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	migrated, err := MigrateConductorPolicyVoiceRule()
+	if err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	if len(migrated) != 1 {
+		t.Fatalf("a partial rule must still be migrated, got %v", migrated)
+	}
+	content, _ := os.ReadFile(path)
+	if !strings.Contains(string(content), conductorVoiceSafetyMarker) {
+		t.Error("the migrated policy has no versioned marker")
+	}
+	if !strings.Contains(string(content), "restate what you understood") {
+		t.Error("the migrated policy still lacks the confirmation instruction")
+	}
+}
+
+func TestMigrateConductorPolicyVoiceRule_HandWrittenRuleIsNotDuplicated(t *testing.T) {
+	// The conductor that receives the voice notes added this rule to its own
+	// POLICY.md by hand before the migration existed. Appending a second copy
+	// would be noise in the file a human maintains.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+	base, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(base, "POLICY.md")
+	byHand := "# Policy\n\nspeech recognition mishears; before anything " +
+		"irreversible or outward-facing, restate what you understood and confirm.\n"
+	if err := os.WriteFile(path, []byte(byHand), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	migrated, err := MigrateConductorPolicyVoiceRule()
+	if err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	if len(migrated) != 0 {
+		t.Errorf("a policy that already states the rule must be left alone, got %v", migrated)
+	}
+	content, _ := os.ReadFile(path)
+	if string(content) != byHand {
+		t.Error("the hand-written policy was modified")
+	}
+}
+
+func TestMigrateConductorPolicyVoiceRule_WritesAtomically(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "xdg-data"))
+	base, err := ConductorDir()
+	if err != nil {
+		t.Fatalf("ConductorDir: %v", err)
+	}
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(base, "POLICY.md")
+	if err := os.WriteFile(path, []byte("# Policy\n\n1. Mine.\n"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := MigrateConductorPolicyVoiceRule(); err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("the replacement lost the original mode: got %o, want 600", perm)
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".POLICY.md.") {
+			t.Errorf("a temporary file was left behind: %s", entry.Name())
+		}
+	}
+	content, _ := os.ReadFile(path)
+	if !strings.Contains(string(content), "1. Mine.") ||
+		!strings.Contains(string(content), conductorVoiceSafetyMarker) {
+		t.Error("the replacement is not the original plus the rule")
+	}
+}
+
 func TestMigrateConductorPolicyVoiceRule_SkipsSymlinks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

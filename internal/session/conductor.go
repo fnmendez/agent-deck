@@ -1561,6 +1561,33 @@ func MigrateLegacyConductors() ([]string, error) {
 // MigrateConductorPolicySplit updates legacy generated per-conductor CLAUDE.md
 // templates to include POLICY.md instructions.
 // It only rewrites non-symlink CLAUDE.md files that exactly match the legacy generated template.
+// writePolicyAtomically replaces path's contents without ever leaving it
+// truncated: write a sibling temp file, fsync it, then rename over the target.
+func writePolicyAtomically(path string, content []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".POLICY.md.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
 // MigrateConductorPolicyVoiceRule appends the dictation-safety rule to any
 // existing POLICY.md that predates it, and reports the files it touched.
 //
@@ -1607,12 +1634,15 @@ func MigrateConductorPolicyVoiceRule() ([]string, error) {
 		if err != nil {
 			continue
 		}
-		if strings.Contains(string(contentBytes), conductorVoiceSafetyMarker) {
-			continue // already has it
+		if PolicyHasVoiceSafetyRule(string(contentBytes)) {
+			continue // already has it, by delimiter or by substance
 		}
 		updated := strings.TrimRight(string(contentBytes), "\n") + "\n" +
 			conductorVoiceSafetyPolicySection
-		if err := os.WriteFile(path, []byte(updated), info.Mode().Perm()); err != nil {
+		// Atomically: os.WriteFile truncates first, so an interruption here
+		// would leave a hand-edited policy empty or half-written -- turning a
+		// safety migration into data loss.
+		if err := writePolicyAtomically(path, []byte(updated), info.Mode().Perm()); err != nil {
 			return migrated, fmt.Errorf("failed to add the voice-safety rule to %s: %w", path, err)
 		}
 		migrated = append(migrated, path)

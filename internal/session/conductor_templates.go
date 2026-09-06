@@ -1,5 +1,7 @@
 package session
 
+import "strings"
+
 // conductorSharedClaudeMDTemplate is the shared instructions file written to
 // ~/.agent-deck/conductor/<instructions-file> for the selected conductor agent.
 // It contains CLI reference, protocols, and formats shared by all conductors (mechanism).
@@ -239,12 +241,35 @@ Orchestration patterns learned from experience. Review at startup and before hea
 ---
 `
 
-// conductorVoiceSafetyMarker identifies the dictation-safety rule inside a
-// POLICY.md. Voice notes reach a conductor as executable prompts and the
-// per-message preamble deliberately no longer carries this rule, so a
-// POLICY.md without the marker is an installation where a misheard word can
-// act with no confirmation step anywhere.
-const conductorVoiceSafetyMarker = "speech recognition mishears"
+// conductorVoiceSafetyMarker is a versioned delimiter, not a prose fragment.
+// Detecting the rule by a sentence meant a policy that happened to contain
+// that sentence -- without the confirmation instruction that gives it force --
+// counted as migrated and was skipped, leaving the rule half-present.
+const conductorVoiceSafetyMarker = "<!-- agent-deck:voice-safety:v1 -->"
+
+// conductorVoiceSafetyPhrases are what make the rule a rule. A policy that
+// predates the marker, or that someone wrote by hand, still counts as having
+// it when ALL of these are present -- otherwise migration would append a
+// second copy to a file that already says the same thing.
+var conductorVoiceSafetyPhrases = []string{
+	"speech recognition mishears",
+	"irreversible or outward-facing",
+	"restate what you understood",
+}
+
+// PolicyHasVoiceSafetyRule reports whether a POLICY.md already carries the
+// dictation-safety rule, by delimiter or by substance.
+func PolicyHasVoiceSafetyRule(content string) bool {
+	if strings.Contains(content, conductorVoiceSafetyMarker) {
+		return true
+	}
+	for _, phrase := range conductorVoiceSafetyPhrases {
+		if !strings.Contains(content, phrase) {
+			return false
+		}
+	}
+	return true
+}
 
 // conductorVoiceSafetyPolicySection is appended to a POLICY.md that predates
 // the rule. InstallPolicyMD preserves an existing POLICY.md, so upgraded
@@ -254,6 +279,8 @@ const conductorVoiceSafetyMarker = "speech recognition mishears"
 // against a file the user has edited.
 const conductorVoiceSafetyPolicySection = `
 ## Voice Messages
+
+<!-- agent-deck:voice-safety:v1 -->
 
 Voice messages were dictated, and speech recognition mishears. A misheard word
 is a different instruction. Before doing anything irreversible or outward-facing
@@ -278,7 +305,7 @@ This file can be overridden per conductor by placing a POLICY.md in the conducto
 4. **Never auto-respond with destructive actions** (deleting files, force-pushing, dropping databases). Always escalate those.
 5. **Never send messages to running sessions.** Only respond to sessions in "waiting" status.
 6. **Log everything.** Every action you take goes in ` + "`" + `./task-log.md` + "`" + `.
-7. **Voice messages were dictated, and speech recognition mishears.** A misheard word is a different instruction. Before doing anything irreversible or outward-facing because of a voice message, restate what you understood and ask the user to confirm. Do not act first and check later. If a passage is garbled, or its transcript confidence is low, ask rather than guessing what he meant.
+7. <!-- agent-deck:voice-safety:v1 --> **Voice messages were dictated, and speech recognition mishears.** A misheard word is a different instruction. Before doing anything irreversible or outward-facing because of a voice message, restate what you understood and ask the user to confirm. Do not act first and check later. If a passage is garbled, or its transcript confidence is low, ask rather than guessing what he meant.
 
 ## Auto-Response Guidelines
 
