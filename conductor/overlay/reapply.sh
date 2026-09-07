@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Re-apply local conductor customizations after `agent-deck update` / `conductor setup`.
-# Idempotent. Usage: reapply.sh [--dry-run] [--rollback]
+# Idempotent. Usage: reapply.sh [--dry-run] [--rollback | --overlay-only]
 #   1. bridge.py       : insert the overlay hook (exactly once) before the stock /sessions handler
 #   2. <conductor>/.claude/settings.json : modern, permissive (bypass; Edit() rules; no ask/deny)
 #   3. LaunchAgent plist: python must be the bridge-venv interpreter
@@ -11,21 +11,28 @@ CDIR="$DATA/conductor"; OVERLAY="$CDIR/overlay"; BRIDGE="$CDIR/bridge.py"
 MODULE="$OVERLAY/bridge_local.py"; APPLIED="$OVERLAY/.applied-sha"
 # Every module the bridge imports, not just the entry point: a change in any of
 # them must restart the bridge, or it keeps serving the code already in memory.
-MODULES="bridge_local.py delivery.py media.py transcribe.py"
+MODULES="bridge_local.py delivery.py media.py transcribe.py documents.py"
 VENV_PY="$DATA/bridge-venv/bin/python"
 PLIST="$HOME/Library/LaunchAgents/com.agentdeck.conductor-bridge.plist"
 LABEL="com.agentdeck.conductor-bridge"; LOG="$CDIR/bridge.log"
 MARKER='# overlay-hook'; ANCHOR='    @dp.message(Command("sessions"))'
-DRY=0; ROLLBACK=0
-for a in "$@"; do case "$a" in --dry-run) DRY=1;; --rollback) ROLLBACK=1;; *) echo "unknown arg $a" >&2; exit 2;; esac; done
+DRY=0; ROLLBACK=0; OVERLAY_ONLY=0
+for a in "$@"; do case "$a" in --dry-run) DRY=1;; --rollback) ROLLBACK=1;; --overlay-only) OVERLAY_ONLY=1;; *) echo "unknown arg $a" >&2; exit 2;; esac; done
 say() { printf '%s\n' "$*"; }
 fail() { say "[FAIL] $*"; exit 1; }
 CHANGED=0; PLIST_CHANGED=0
 
+if [ "$OVERLAY_ONLY" = 1 ] && [ "$ROLLBACK" = 1 ]; then
+  fail "--overlay-only cannot be combined with --rollback"
+fi
 # ---- preflight ------------------------------------------------------------
 [ -f "$BRIDGE" ] || fail "$BRIDGE missing"
 [ -x "$VENV_PY" ] || fail "bridge venv python missing: $VENV_PY"
 [ -f "$PLIST" ] || fail "LaunchAgent plist missing: $PLIST"
+if [ "$OVERLAY_ONLY" = 1 ]; then
+  cur="$(plutil -extract ProgramArguments.0 raw -o - "$PLIST" 2>/dev/null || true)"
+  [ "$cur" = "$VENV_PY" ] || fail "overlay-only requires the existing bridge-venv interpreter"
+fi
 for module in $MODULES; do
   [ -f "$OVERLAY/$module" ] || fail "overlay module missing: $OVERLAY/$module"
   "$VENV_PY" -m py_compile "$OVERLAY/$module" || fail "$module does not compile"
@@ -51,6 +58,9 @@ restart_and_verify() {
     new_pid="$(pid_of)"
     [ -n "$new_pid" ] && [ "$new_pid" != "-" ] && [ "$new_pid" != "$old_pid" ] || continue
     if tail -c "+$((offset + 1))" "$LOG" | grep -q "$want"; then
+      if [ "$ROLLBACK" = 0 ] && ! tail -c "+$((offset + 1))" "$LOG" | grep -q "overlay: document outbox ready"; then
+        continue
+      fi
       sleep 3   # pid must be stable and no overlay error may follow
       [ "$(pid_of)" = "$new_pid" ] || { say "[FAIL] bridge pid $new_pid died right after start"; return 1; }
       if tail -c "+$((offset + 1))" "$LOG" | grep -q "overlay: bridge_local failed\|Traceback"; then
@@ -90,7 +100,7 @@ hook = '''    # overlay-hook: local commands (/agents /peek /send), re-applied b
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent / "overlay"))
         import bridge_local
-        bridge_local.register(dp, globals(), is_authorized)
+        bridge_local.register(dp, globals(), is_authorized, authorized_user_id=authorized_user)
     except Exception as _overlay_err:
         log.error("overlay: bridge_local failed to register: %s", _overlay_err)
 
@@ -113,12 +123,44 @@ PYEOF
   CHANGED=1
 fi
 
+# Upgrade only the exact prior registration line; unknown hook shapes fail closed.
+if grep -qxF '        bridge_local.register(dp, globals(), is_authorized)' "$BRIDGE"; then
+  CHANGED=1
+fi
+"$VENV_PY" - "$BRIDGE" "$DRY" <<'PYDOC'
+import os, py_compile, sys
+path, dry = sys.argv[1], sys.argv[2] == "1"
+old = "        bridge_local.register(dp, globals(), is_authorized)"
+new = "        bridge_local.register(dp, globals(), is_authorized, authorized_user_id=authorized_user)"
+source = open(path, encoding="utf-8").read()
+if source.count(new) == 1 and source.count(old + "\n") == 0:
+    sys.exit(0)
+if source.count(old + "\n") != 1 or new in source:
+    # Dry run on stock bridge: insertion above was deliberately not performed.
+    if dry and "# overlay-hook" not in source:
+        sys.exit(0)
+    sys.exit("unsupported overlay registration; inspect the bridge before applying")
+if dry:
+    print("[dry] would upgrade the existing overlay hook for document delivery")
+    sys.exit(0)
+tmp = path + ".document-hook-tmp"
+with open(tmp, "w", encoding="utf-8") as stream:
+    stream.write(source.replace(old + "\n", new + "\n", 1))
+    stream.flush(); os.fsync(stream.fileno())
+py_compile.compile(tmp, doraise=True)
+os.chmod(tmp, os.stat(path).st_mode)
+os.replace(tmp, path)
+print("[ok] existing overlay hook upgraded for document delivery")
+PYDOC
+
 # ---- 1b. any overlay module changed since last applied? ------------------
 if [ "$(cat "$APPLIED" 2>/dev/null || true)" != "$MODULE_SHA" ]; then
   say "[$([ "$DRY" = 1 ] && echo dry || echo ok)] overlay modules changed since last apply -> restart needed"
   CHANGED=1
 fi
 
+# --overlay-only never reads/writes conductor settings or changes the plist.
+if [ "$OVERLAY_ONLY" = 0 ]; then
 # ---- 2. conductor settings.json -----------------------------------------
 for meta in "$CDIR"/*/meta.json; do
   [ -f "$meta" ] || continue
@@ -164,6 +206,8 @@ cur="$(plutil -extract ProgramArguments.0 raw -o - "$PLIST" 2>/dev/null || true)
 if [ "$cur" = "$VENV_PY" ]; then say "[ok] plist: python is bridge-venv"
 elif [ "$DRY" = 1 ]; then say "[dry] plist: would set python $cur -> $VENV_PY"
 else plutil -replace ProgramArguments.0 -string "$VENV_PY" "$PLIST"; say "[ok] plist: python set to $VENV_PY"; CHANGED=1; PLIST_CHANGED=1; fi
+
+fi
 
 # ---- 4. restart if needed -----------------------------------------------
 if [ "$DRY" = 1 ]; then say "[dry] no changes applied"; exit 0; fi
