@@ -127,6 +127,124 @@ exactly-once execution ledger (I10), and the prompt framing with provenance
 (I11). Measured through the adapter on this machine: a real 15.2 s Spanish
 note in 6.0 s (2.5× faster than real time) with the Ultra local large model.
 
+## Send an explicitly authorized Markdown report
+
+`documents.py` adds an offline enqueue/status CLI and a private SQLite outbox. The dispatcher
+starts one local outbox task using its **existing Bot**; no second Telegram poller, bot credential,
+endpoint, conductor prompt or automatic response feed is created. The recipient is only the
+configured operator's private Telegram account, passed explicitly by the bridge hook.
+
+The director writes `SEND-READY.json` after reviewing the final Markdown and authorizing this
+specific send. Never generate it for a draft. The exact eight-field schema is:
+
+```json
+{
+  "schema": "slavna.document-send.v1",
+  "authorization_id": "<new canonical UUID for this explicit send authorization>",
+  "authorized": true,
+  "recipient": "configured_operator",
+  "artifact_path": "/absolute/path/REPORT.md",
+  "sha256": "<SHA-256 of the reviewed file bytes, 64 lowercase hex characters>",
+  "caption": "Informe final: CI, heartbeats y flotas. Adjunto en Markdown.",
+  "expires_at": 1788800000
+}
+```
+
+Choose `expires_at` when authorizing: UTC Unix seconds, an integer strictly in the future and
+at most 24 hours from enqueue time. The example is not a live authorization. Unknown or duplicate
+JSON fields are rejected. The marker and source must be owned regular files at absolute paths,
+without symlinks, hardlinks or group/world write permission. Credential paths are refused. The
+source is nonempty UTF-8 without NUL, at most 1 MiB. Its ASCII basename starts with a letter/digit,
+uses letters/digits/spaces/`_-.`, ends in `.md`, and is at most 124 characters. Captions contain
+1–1024 UTF-16 code units and use plain text (`parse_mode=None`). Local same-user processes already
+share operator authority; the manifest records reviewed readiness rather than authenticating an
+untrusted OS principal.
+
+After the director deploys this overlay, the bridge initializes
+`<conductor-data-dir>/document-outbox/outbox.sqlite3` in a private directory. The CLI requires that
+existing database and never loads bridge config, environment files, keychain items, or a Bot:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 \
+/Users/francomendez/.local/share/agent-deck/bridge-venv/bin/python \
+  /Users/francomendez/.local/share/agent-deck/conductor/overlay/documents.py \
+  --database /Users/francomendez/.local/share/agent-deck/conductor/document-outbox/outbox.sqlite3 \
+  --enqueue /Users/francomendez/.config/director-codex/fleet-standard-20260907/SEND-READY.json
+
+PYTHONDONTWRITEBYTECODE=1 \
+/Users/francomendez/.local/share/agent-deck/bridge-venv/bin/python \
+  /Users/francomendez/.local/share/agent-deck/conductor/overlay/documents.py \
+  --database /Users/francomendez/.local/share/agent-deck/conductor/document-outbox/outbox.sqlite3 \
+  --status <AUTHORIZATION_ID_FROM_SEND_READY>
+```
+
+Enqueue stores immutable bytes plus the authorization. Changing the source or marker afterwards
+does not alter or cancel that queued send. At most eight documents can be pending. The task checks
+one item every two seconds while the bridge event loop is available. An unavailable bridge leaves
+work pending; expiry is checked before dispatch. If the outbox cannot initialize, the bridge logs
+that document delivery is disabled and continues its existing messaging paths.
+
+| Receipt state | Meaning |
+| --- | --- |
+| `pending` | Snapshot authorized and stored; not yet sent. |
+| `api_accepted` | Telegram returned a positive message ID and matching private chat, document filename and size. |
+| `unknown` | Attempt claimed; it may be in flight or may already have delivered. No retry. |
+| `rejected` | Explicit Telegram rejection, or snapshot integrity failure before transport. |
+| `expired` | Authorization expired before dispatch. |
+
+The JSON receipt contains authorization ID, SHA, filename, state, chat/message IDs when available,
+a bounded reason and `desktop_observed: false`. API success does not prove that Desktop displayed
+the file or that Franco read it. Observe only the confirmed Slavna chat and record that separate
+proof. Never capture other Telegram chats. CLI exit 0 means pending or API accepted; 2 means
+unknown/rejected/expired; 1 means refused or unavailable input/state.
+
+There is **at most one send attempt per authorization**, not a promise of exactly-once network
+delivery. FULL-synchronous SQLite records `unknown` before the first network await. Cancellation,
+restart, timeout, malformed result, server failure or lost receipt write never requeues it.
+Explicit 4xx/429 failures also never retry automatically. Replaying the same authorization returns
+its original receipt, even after source removal or expiry; changing any field under that ID is
+refused. A new explicit authorization ID may deliberately resend the same SHA after a known result.
+A pending or unknown attempt for that SHA blocks new IDs. Inspect an unknown delivery with the
+director; do not edit/delete its row, replace the database, or change bytes to bypass the hold.
+This release has no unknown-resolution/reset command. Preserve the ledger across upgrades and
+rollback; the older overlay leaves these records untouched.
+
+### Deploy only the overlay
+
+`reapply.sh --overlay-only` upgrades the exact supported old hook, includes `documents.py` in the
+module hash, and restarts the existing bridge once if needed. It does **not** read/rewrite conductor
+settings or change the plist; it refuses if the plist is not already using bridge-venv. Unknown
+hook shapes fail closed. `--overlay-only --dry-run` reports the changes without applying them.
+Do not use `agent-deck update`, `conductor setup`, the retired automation Slavna installer, or the
+full reapply settings path for this feature.
+
+The director owns integration and deployment. From the reviewed checkout, back up the current
+`bridge.py`, `overlay/bridge_local.py`, `overlay/reapply.sh` and `.applied-sha` to one named private
+rollback directory; copy just `documents.py`, `bridge_local.py` and `reapply.sh` from
+`conductor/overlay/` to the deployed overlay directory. Then run:
+
+```sh
+/Users/francomendez/.local/share/agent-deck/conductor/overlay/reapply.sh --overlay-only --dry-run
+/Users/francomendez/.local/share/agent-deck/conductor/overlay/reapply.sh --overlay-only
+```
+
+Require the same single LaunchAgent, a new stable PID when changed, `overlay: registered` and
+`overlay: document outbox ready` after that restart, and the private outbox database. Inspect only
+those bounded log markers; do not dump credentials or unrelated message content. A second apply
+must leave the PID unchanged. For rollback, restore the named backup files and restart only
+`com.agentdeck.conductor-bridge`; retain the document database and its claims. If interrupted
+between source copy and apply, rerun the same overlay-only command; the old hook accepts the new
+module without enabling documents until the explicit operator-ID hook is applied.
+
+Tests: `python3 -m unittest discover -s conductor/overlay/tests -p 'test_*.py'`. The document suite
+covers authorization, immutable snapshots, duplicate IDs, explicit resend after known outcomes,
+unknown holds, independent SQLite connections, cancellation/reopen, receipt-write failure and Bot
+argument/response validation. The reapply suite executes the actual shell script with fake
+launchctl/plutil and temporary settings, pinning old-hook migration, idempotence and permission
+preservation. The optional real-aiogram multipart test runs offline under the bridge venv and on
+Python 3.12 in CI using aiogram 3.30.0; it creates a fixture Bot with a fake token and intercepts all
+transport, without reading the live configuration.
+
 ## Telegram commands added by `bridge_local.py`
 | Command | Behaviour |
 |---|---|

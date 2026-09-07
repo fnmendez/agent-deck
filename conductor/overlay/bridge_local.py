@@ -38,6 +38,7 @@ except ImportError:  # tests without aiogram
     F = None  # type: ignore
     InlineKeyboardButton = InlineKeyboardMarkup = None  # type: ignore
 
+import documents
 import media
 import transcribe
 from delivery import (  # shared truth resolution (same dir, added by the hook to sys.path)
@@ -684,7 +685,7 @@ def install_conductor_send(ctx) -> bool:
     return True
 
 
-def register(dp, ctx: dict, is_authorized) -> None:
+def register(dp, ctx: dict, is_authorized, *, authorized_user_id=None) -> None:
     """ctx: bridge globals (run_cli, get_sessions_list_all, get_unique_profiles,
     get_default_conductor, conductor_session_title, split_message, log,
     resolve_config_path, get_conductor_names)."""
@@ -1094,6 +1095,11 @@ def register(dp, ctx: dict, is_authorized) -> None:
         )
         dp.message.register(on_photo, F.photo | F.document)
         dp.callback_query.register(on_peek_refresh, F.data.startswith("pk:"))
+    if authorized_user_id is not None:
+        documents.register(
+            dp, database=Path(ctx["CONDUCTOR_DIR"]) / "document-outbox" / "outbox.sqlite3",
+            user_id=authorized_user_id, log=log,
+        )
     install_conductor_send(ctx)
     log.info(
         "overlay: registered /agents /sessions /peek /send /help + audio, image "
