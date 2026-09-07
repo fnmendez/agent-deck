@@ -2688,6 +2688,8 @@ func handleSessionSend(profile string, args []string) {
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
 	quiet := fs.Bool("q", false, "Quiet mode")
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
+	strictOnce := fs.Bool("strict-once", false, "Refuse unless the exact thread has an idle empty composer; attempt once, never claim consumption")
+	expectedThread := fs.String("expected-thread", "", "Required native thread UUID for --strict-once")
 	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output")
 	stream := fs.Bool("stream", false, "Stream JSONL events (Claude only) to stdout instead of returning a snapshot")
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
@@ -2723,55 +2725,81 @@ func handleSessionSend(profile string, args []string) {
 	}
 	remaining := fs.Args()
 
-	out := NewCLIOutput(*jsonOutput, *quiet)
+	out := NewCLIOutput(*jsonOutput, *quiet && !*strictOnce)
+	strictInputError := func(message, code string) {
+		if *strictOnce {
+			out.ErrorWithData(message, code, map[string]interface{}{"delivery": "refused", "attempted": false, "reason": "invalid_input_or_target"})
+		} else {
+			out.Error(message, code)
+		}
+	}
 
 	needPositionalMessage := *messageFile == ""
 	if len(remaining) < 1 || (needPositionalMessage && len(remaining) < 2) {
-		fs.Usage()
-		out.Error("session and message (or --message-file) are required", ErrCodeInvalidOperation)
+		if !*strictOnce {
+			fs.Usage()
+		}
+		strictInputError("session and message (or --message-file) are required", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
 	if *stream && *wait {
-		out.Error("--stream and --wait are mutually exclusive", ErrCodeInvalidOperation)
+		strictInputError("--stream and --wait are mutually exclusive", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
 	if *draft && (*wait || *stream || *noWait) {
-		out.Error("--draft is incompatible with --wait, --stream, and --no-wait", ErrCodeInvalidOperation)
+		strictInputError("--draft is incompatible with --wait, --stream, and --no-wait", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
 	// #1578: --defer-if-busy holds delivery until the target is turn-finished;
 	// --no-wait fires immediately. They are opposites.
 	if *deferIfBusy && *noWait {
-		out.Error("--defer-if-busy is incompatible with --no-wait", ErrCodeInvalidOperation)
+		strictInputError("--defer-if-busy is incompatible with --no-wait", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
 	sessionRef := remaining[0]
-	message, err := resolveMessageInput(strings.Join(remaining[1:], " "), *messageFile, os.Stdin)
+	resolveInput := resolveMessageInput
+	if *strictOnce {
+		resolveInput = resolveStrictMessageInput
+	}
+	message, err := resolveInput(strings.Join(remaining[1:], " "), *messageFile, os.Stdin)
 	if err != nil {
-		out.Error(err.Error(), ErrCodeInvalidOperation)
+		strictInputError(err.Error(), ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 
 	// Load sessions
 	_, instances, _, err := loadSessionData(profile)
 	if err != nil {
-		out.Error(err.Error(), ErrCodeNotFound)
+		strictInputError(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
 	}
 
 	// Resolve session
 	inst, errMsg, errCode := ResolveSession(sessionRef, instances)
 	if inst == nil {
-		out.Error(errMsg, errCode)
+		strictInputError(errMsg, errCode)
 		if errCode == ErrCodeNotFound {
 			os.Exit(2)
 		}
 		os.Exit(1)
 		return // unreachable, satisfies staticcheck SA5011
+	}
+
+	if *strictOnce {
+		if *draft || *wait || *stream || *noWait || *deferIfBusy || *expectedThread == "" || sessionRef != inst.ID {
+			out.ErrorWithData("--strict-once requires full session ID and --expected-thread; incompatible with draft/wait/stream/no-wait/defer-if-busy", ErrCodeInvalidOperation, map[string]interface{}{"delivery": "refused", "attempted": false, "reason": "invalid_strict_options", "session_id": inst.ID})
+			os.Exit(1)
+		}
+		handleStrictSessionSend(out, inst, *expectedThread, message)
+		return
+	}
+	if *expectedThread != "" {
+		strictInputError("--expected-thread requires --strict-once", ErrCodeInvalidOperation)
+		os.Exit(1)
 	}
 
 	// --stream is Claude-only in Phase 1. Non-Claude tools error cleanly

@@ -1,0 +1,417 @@
+{
+  "source_version": "2.1.260",
+  "source": "actual installed CLI UI on isolated tmux; no model prompt or external network; owned workspace/config and static statusLine",
+  "capture_width": 141,
+  "capture_height": 67,
+  "note": "Raw prompt/footer and cursor fields are recordings. Tests reconstruct only the parent-reported director layout with synthetic history/status and synthetic native identity. Software cursor flag 0 remains a live-snapshot refusal.",
+  "cases": [
+    {
+      "mode": "bypass",
+      "case": "blank_initial",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "blank_home",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "ascii_one_end",
+      "input_empty": false,
+      "cursor_x": 3,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0 \u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "ascii_one_home",
+      "input_empty": false,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "ascii_one_cleared",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "ascii_four_end",
+      "input_empty": false,
+      "cursor_x": 6,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0    \u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "ascii_four_home",
+      "input_empty": false,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "ascii_four_cleared",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "nbsp_one_end",
+      "input_empty": false,
+      "cursor_x": 3,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "nbsp_one_home",
+      "input_empty": false,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m\u00a0\u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "nbsp_one_cleared",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "nbsp_four_end",
+      "input_empty": false,
+      "cursor_x": 6,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u00a0\u00a0\u00a0\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "nbsp_four_home",
+      "input_empty": false,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m\u00a0\u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "nbsp_four_cleared",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "mixed_whitespace_end",
+      "input_empty": false,
+      "cursor_x": 6,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0 \u00a0  \u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "mixed_whitespace_home",
+      "input_empty": false,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "mode": "bypass",
+      "case": "mixed_whitespace_cleared",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 63,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "blank_initial",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "blank_home",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "ascii_one_end",
+      "input_empty": false,
+      "cursor_x": 3,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0 \u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "ascii_one_home",
+      "input_empty": false,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "ascii_one_cleared",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "ascii_four_end",
+      "input_empty": false,
+      "cursor_x": 6,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0    \u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "ascii_four_home",
+      "input_empty": false,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "ascii_four_cleared",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "nbsp_one_end",
+      "input_empty": false,
+      "cursor_x": 3,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "nbsp_one_home",
+      "input_empty": false,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m\u00a0\u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "nbsp_one_cleared",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "nbsp_four_end",
+      "input_empty": false,
+      "cursor_x": 6,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u00a0\u00a0\u00a0\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "nbsp_four_home",
+      "input_empty": false,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m\u00a0\u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "nbsp_four_cleared",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "mixed_whitespace_end",
+      "input_empty": false,
+      "cursor_x": 6,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0 \u00a0  \u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "mixed_whitespace_home",
+      "input_empty": false,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on\u001b[39m"
+    },
+    {
+      "mode": "manual",
+      "case": "mixed_whitespace_cleared",
+      "input_empty": true,
+      "cursor_x": 2,
+      "cursor_y": 64,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "\u001b[39m  \u001b[38;5;246m\u23f8 manual mode on \u00b7 ? for shortcuts \u00b7 \u2190 for agents\u001b[39m"
+    }
+  ],
+  "resize_cases": [
+    {
+      "case": "96x40_empty",
+      "input_empty": true,
+      "width": 96,
+      "height": 40,
+      "cursor_x": 2,
+      "cursor_y": 36,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "case": "96x40_space_home",
+      "input_empty": false,
+      "width": 96,
+      "height": 40,
+      "cursor_x": 2,
+      "cursor_y": 36,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "case": "96x40_cleared",
+      "input_empty": true,
+      "width": 96,
+      "height": 40,
+      "cursor_x": 2,
+      "cursor_y": 36,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "case": "180x80_empty",
+      "input_empty": true,
+      "width": 180,
+      "height": 80,
+      "cursor_x": 2,
+      "cursor_y": 76,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    },
+    {
+      "case": "180x80_space_home",
+      "input_empty": false,
+      "width": 180,
+      "height": 80,
+      "cursor_x": 2,
+      "cursor_y": 76,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m"
+    },
+    {
+      "case": "180x80_cleared",
+      "input_empty": true,
+      "width": 180,
+      "height": 80,
+      "cursor_x": 2,
+      "cursor_y": 76,
+      "cursor_flag": 0,
+      "raw_prompt": "\u001b[39m\u276f\u00a0\u001b[7m \u001b[0m",
+      "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5 bypass permissions on\u001b[38;5;246m (shift+tab to cycle) \u00b7 \u2190 for agents\u001b[39m"
+    }
+  ]
+}
