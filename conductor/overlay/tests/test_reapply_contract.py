@@ -168,7 +168,7 @@ class OverlayOnlyDeployTest(unittest.TestCase):
         self.cdir = self.data / "conductor"
         self.overlay = self.cdir / "overlay"
         self.overlay.mkdir(parents=True)
-        for name in ("bridge_local.py", "documents.py", "delivery.py", "media.py", "transcribe.py", "reapply.sh"):
+        for name in ("bridge_local.py", "documents.py", "delivery.py", "media.py", "transcribe.py", "shared_queue.py", "reapply.sh"):
             shutil.copy2(OVERLAY_DIR / name, self.overlay / name)
         self.bridge = self.cdir / "bridge.py"
         self.stock = CANONICAL_BRIDGE.read_text()
