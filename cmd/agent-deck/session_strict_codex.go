@@ -45,7 +45,7 @@ func strictNativeCommand(ctx context.Context, name string, args ...string) (*exe
 		starts := false
 		if len(args) == 4 {
 			format := args[3] // #nosec G602 -- guarded by len(args) == 4 immediately above; the independent two-argument branch is not this path.
-			starts = args[0] == "-p" && validPIDList(args[1]) && args[2] == "-o" && (format == "pid=,lstart=" || format == "lstart=")
+			starts = args[0] == "-p" && args[2] == "-o" && ((validPIDList(args[1]) && (format == "pid=,lstart=" || format == "lstart=")) || (strictValidPID(args[1]) && format == "pid=,ppid=,pgid=,tpgid=,state=,tty=,comm="))
 		}
 		if !table && !starts {
 			return nil, fmt.Errorf("unsupported process probe")
