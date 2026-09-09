@@ -44,8 +44,8 @@ func strictNativeThread(inst *session.Instance, target *tmux.Session, id tmux.St
 	if err := json.Unmarshal(data, &record); err != nil {
 		return "", fmt.Errorf("native session unavailable")
 	}
-	started, err := strictNativeProbe("ps", "-p", id.PID, "-o", "lstart=")
-	if err != nil || !strictClaudeIdentityMatches(record, id, inst.ProjectPath, string(started), runtime.GOOS) {
+	home, err := os.UserHomeDir()
+	if err != nil || !strictClaudeIdentityWithRun(record, id, inst.ProjectPath, runtime.GOOS, home, strictNativeProbe) {
 		return "", fmt.Errorf("native session identity mismatch")
 	}
 
@@ -92,6 +92,148 @@ type strictClaudeRecord struct {
 	Tmux      string `json:"tmux"`
 	ProcStart string `json:"procStart"`
 	PIDDomain string `json:"pidDomain"`
+	Version   string `json:"version"`
+}
+
+var strictClaudeNativeVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// Native installs expose their version as tmux's command, while Darwin's ps
+// still reports claude. A version alone is never executable identity evidence.
+func strictClaudeIdentityWithRun(record strictClaudeRecord, id tmux.StrictPaneIdentity, project, domain, home string, run strictProbe) bool {
+	if domain != "darwin" || !strictValidPID(id.PID) {
+		return false
+	}
+	started, err := run("ps", "-p", id.PID, "-o", "lstart=")
+	if err != nil {
+		return false
+	}
+	if id.Command == "claude" || strings.HasPrefix(id.Command, "claude-") {
+		return strictClaudeIdentityMatches(record, id, project, string(started), domain)
+	}
+	if !strictClaudeNativeVersion.MatchString(id.Command) || record.Version != id.Command || !filepath.IsAbs(home) || filepath.Clean(home) != home {
+		return false
+	}
+	// Normalize only after choosing the separately corroborated native path;
+	// retain every existing record/PID/start/CWD/tmux requirement.
+	nativeID := id
+	nativeID.Command = "claude"
+	if !strictClaudeIdentityMatches(record, nativeID, project, string(started), domain) {
+		return false
+	}
+	observeProcess := func() (string, error) {
+		table, err := run("ps", "-p", id.PID, "-o", "pid=,ppid=,pgid=,tpgid=,state=,tty=,comm=")
+		if err != nil {
+			return "", err
+		}
+		matched := ""
+		for _, line := range strings.Split(string(table), "\n") {
+			f := strings.Fields(line)
+			if len(f) == 0 || f[0] != id.PID {
+				continue
+			}
+			if matched != "" || len(f) != 7 || f[6] != "claude" || !strictValidPID(f[2]) || f[2] != f[3] || id.TTY == "" || f[5] != strings.TrimPrefix(id.TTY, "/dev/") || !strings.Contains(f[4], "+") || strings.ContainsAny(f[4], "TXZ") {
+				return "", fmt.Errorf("native Claude foreground process unverified")
+			}
+			matched = strings.Join(f[:4], " ") + " " + strings.Join(f[5:], " ")
+		}
+		if matched == "" {
+			return "", fmt.Errorf("native Claude process missing")
+		}
+		return matched, nil
+	}
+	before, err := observeProcess()
+	if err != nil {
+		return false
+	}
+	executable := filepath.Join(home, ".local", "share", "claude", "versions", id.Command)
+	observeExecutable := func() (strictRootBinding, *os.File, error) {
+		output, err := run("lsof", "-a", "-p", id.PID, "-F", "pfaDint")
+		if err != nil {
+			return strictRootBinding{}, nil, err
+		}
+		descriptor, err := strictClaudeExecutableDescriptor(string(output), id.PID, project, executable)
+		if err != nil {
+			return strictRootBinding{}, nil, err
+		}
+		file, ancestors, err := strictOpenVerifiedPath(executable)
+		if err != nil {
+			return strictRootBinding{}, nil, err
+		}
+		dev, ino, err := strictFileIdentity(file)
+		stat, statErr := file.Stat()
+		if err != nil || statErr != nil || stat.Mode().Perm()&0111 == 0 || dev != descriptor.Device || ino != descriptor.Inode {
+			file.Close()
+			return strictRootBinding{}, nil, fmt.Errorf("native Claude executable replaced")
+		}
+		return strictRootBinding{descriptor, ancestors}, file, nil
+	}
+	first, held, err := observeExecutable()
+	if err != nil {
+		return false
+	}
+	defer held.Close()
+	second, heldAgain, err := observeExecutable()
+	if err != nil {
+		return false
+	}
+	defer heldAgain.Close()
+	after, err := observeProcess()
+	if err != nil || before != after || first != second {
+		return false
+	}
+	startedAgain, err := run("ps", "-p", id.PID, "-o", "lstart=")
+	return err == nil && strictClaudeIdentityMatches(record, nativeID, project, string(startedAgain), domain)
+}
+
+// Darwin lsof lists the loaded executable as the first txt mapping. Later txt
+// mappings may be libraries or data files; they cannot authorize a binary.
+func strictClaudeExecutableDescriptor(output, pid, project, executable string) (strictDescriptor, error) {
+	var records []map[byte]string
+	var record map[byte]string
+	process := ""
+	for _, line := range strings.Split(output, "\n") {
+		if line == "" {
+			continue
+		}
+		key, value := line[0], line[1:]
+		if key == 'p' {
+			if process != "" || value != pid || record != nil {
+				return strictDescriptor{}, fmt.Errorf("ambiguous native Claude process")
+			}
+			process = value
+			continue
+		}
+		if key == 'f' {
+			record = map[byte]string{}
+			records = append(records, record)
+		}
+		if process == "" || record == nil {
+			return strictDescriptor{}, fmt.Errorf("missing native Claude descriptor")
+		}
+		if _, exists := record[key]; exists {
+			return strictDescriptor{}, fmt.Errorf("duplicate native Claude descriptor field")
+		}
+		record[key] = value
+	}
+	var first map[byte]string
+	cwd := ""
+	for _, r := range records {
+		if r['f'] == "cwd" {
+			if cwd != "" || r['t'] != "DIR" || r['n'] != project {
+				return strictDescriptor{}, fmt.Errorf("native Claude cwd unverified")
+			}
+			cwd = r['n']
+		}
+		if r['f'] == "txt" && first == nil {
+			first = r
+		}
+	}
+	dev, e1 := strconv.ParseUint(first['D'], 0, 64)
+	ino, e2 := strconv.ParseUint(first['i'], 10, 64)
+	if process != pid || cwd == "" || first['t'] != "REG" || first['n'] != executable || e1 != nil || e2 != nil || dev == 0 || ino == 0 {
+		return strictDescriptor{}, fmt.Errorf("native Claude executable unverified")
+	}
+	return strictDescriptor{FD: "txt", Path: executable, Device: dev, Inode: ino}, nil
 }
 
 func strictClaudeIdentityMatches(record strictClaudeRecord, id tmux.StrictPaneIdentity, project, started, domain string) bool {
