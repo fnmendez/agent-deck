@@ -50,13 +50,13 @@ func strictNativeCommand(ctx context.Context, name string, args ...string) (*exe
 		if !table && !starts {
 			return nil, fmt.Errorf("unsupported process probe")
 		}
-		// #nosec G204 -- fixed system executable; exact format whitelist and positive numeric PID list above, never a shell.
+		// #nosec G204 G702 -- fixed system executable; exact argv-shape/format whitelist and positive numeric PID list above, never a shell.
 		cmd = exec.CommandContext(ctx, "/bin/ps", args...)
 	case "lsof":
 		if len(args) != 5 || args[0] != "-a" || args[1] != "-p" || !strictValidPID(args[2]) || args[3] != "-F" || args[4] != "pfaDint" {
 			return nil, fmt.Errorf("unsupported descriptor probe")
 		}
-		// #nosec G204 -- fixed system executable with one validated numeric PID and fixed read-only flags, never a shell.
+		// #nosec G204 G702 -- fixed system executable with one validated numeric PID and exact read-only argv, never a shell.
 		cmd = exec.CommandContext(ctx, "/usr/sbin/lsof", args...)
 	default:
 		return nil, fmt.Errorf("unsupported native probe")

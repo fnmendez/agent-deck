@@ -132,6 +132,21 @@ func (s *Session) strictSnapshot(pinned string) (strictSnapshot, error) {
 	})
 }
 
+// StrictProbeIdentity performs the read-only half of the first strict snapshot
+// and returns metadata only. It cannot stage, submit, clear, restore or expose
+// pane text. A probe does not certify the later composer/final-snapshot checks.
+func (s *Session) StrictProbeIdentity() (StrictPaneIdentity, error) {
+	return strictProbeIdentity(s.strictSnapshot)
+}
+
+func strictProbeIdentity(snapshot func(string) (strictSnapshot, error)) (StrictPaneIdentity, error) {
+	observed, err := snapshot("")
+	if err != nil {
+		return StrictPaneIdentity{}, err
+	}
+	return observed.identity, nil
+}
+
 func captureStrictSnapshot(name, pinned string, read func(...string) ([]byte, error), rawMode func(string) bool) (strictSnapshot, error) {
 	observedAt := time.Now()
 	// Include both immutable target and dynamic active pane selection in each

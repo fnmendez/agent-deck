@@ -283,6 +283,31 @@ func NewStorageWithProfile(profile string) (*Storage, error) {
 	}, nil
 }
 
+// OpenStorageReadOnlyWithProfile opens only an existing current-schema profile
+// registry through StateDB's stable private DB/WAL/SHM snapshot. It performs no
+// source layout/JSON/schema migration, directory creation, WAL mode change,
+// checkpoint, save or timestamp update, while retaining committed WAL rows.
+func OpenStorageReadOnlyWithProfile(profile string) (*Storage, error) {
+	effectiveProfile, err := ResolveProfileForStorage(profile)
+	if err != nil {
+		return nil, err
+	}
+	profileDir, err := GetProfileDir(effectiveProfile)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(profileDir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("read-only profile registry is unavailable")
+	}
+	dbPath := filepath.Join(profileDir, "state.db")
+	db, err := statedb.OpenReadOnly(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open read-only state database: %w", err)
+	}
+	return &Storage{db: db, dbPath: dbPath, profile: effectiveProfile}, nil
+}
+
 // Profile returns the profile name this storage is using
 func (s *Storage) Profile() string {
 	return s.profile
