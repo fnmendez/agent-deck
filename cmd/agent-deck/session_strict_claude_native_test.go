@@ -2,14 +2,231 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/asheshgoplani/agent-deck/internal/session"
 	"github.com/asheshgoplani/agent-deck/internal/tmux"
 )
+
+func strictClaudeStrongFixture(t *testing.T) (string, string, tmux.StrictPaneIdentity, strictProbe) {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	configDir := filepath.Join(home, ".claude")
+	project := "/project"
+	id := tmux.StrictPaneIdentity{PID: "123", PaneID: "%2", SessionName: "target", WindowID: "@3",
+		CWD: project, Command: "2.1.263", TTY: "/dev/ttys001"}
+	started := "Tue Sep  8 18:28:28 2026"
+	record := strictClaudeRecord{PID: 123, SessionID: "00000000-0000-4000-8000-000000000001",
+		CWD: project, Tmux: "target:@3.%2", ProcStart: started, PIDDomain: "darwin", Version: id.Command}
+	recordPath := filepath.Join(configDir, "sessions", id.PID+".json")
+	if err := os.MkdirAll(filepath.Dir(recordPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(record)
+	if err := os.WriteFile(recordPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(configDir, "projects", session.ConvertToClaudeDirName(project), record.SessionID+".jsonl")
+	if err := os.MkdirAll(filepath.Dir(rootPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rootPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(home, ".local", "share", "claude", "versions", id.Command)
+	if err := os.MkdirAll(filepath.Dir(executable), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte("native fixture"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	opened, _, err := strictOpenVerifiedPath(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, ino, err := strictFileIdentity(opened)
+	opened.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(name string, args ...string) ([]byte, error) {
+		switch {
+		case name == "ps" && len(args) == 4 && args[3] == "lstart=":
+			return []byte(started), nil
+		case name == "ps":
+			return []byte("123 12 123 123 S+ ttys001 claude\n"), nil
+		case name == "lsof":
+			return []byte(fmt.Sprintf("p123\nfcwd\ntDIR\nn/project\nftxt\ntREG\nD0x%x\ni%d\nn%s\n", dev, ino, executable)), nil
+		default:
+			return nil, fmt.Errorf("unexpected probe")
+		}
+	}
+	return configDir, home, id, run
+}
+
+func TestStrictClaudeStrongThreadProof(t *testing.T) {
+	configDir, home, id, run := strictClaudeStrongFixture(t)
+	proof, err := strictClaudeThreadProofWithRun(configDir, "/project", id, "darwin", home, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proof.DurableStop || proof.Thread != "00000000-0000-4000-8000-000000000001" || proof.CWD != "/project" || proof.Signature == "" {
+		t.Fatalf("incomplete strong proof: %+v", proof)
+	}
+	want := time.Date(2026, time.September, 8, 18, 28, 28, 0, time.UTC)
+	if !proof.ProcessStartedAt.Equal(want) {
+		t.Fatalf("start=%s want=%s", proof.ProcessStartedAt, want)
+	}
+}
+
+func TestStrictClaudeStrongThreadProofRejectsNativeFiles(t *testing.T) {
+	for _, fault := range []string{"missing_root", "root_symlink", "root_hardlink", "root_mode", "record_hardlink", "record_mode", "record_oversize", "record_invalid_thread"} {
+		t.Run(fault, func(t *testing.T) {
+			configDir, home, id, run := strictClaudeStrongFixture(t)
+			recordPath := filepath.Join(configDir, "sessions", id.PID+".json")
+			rootDir := filepath.Join(configDir, "projects", session.ConvertToClaudeDirName("/project"))
+			entries, err := os.ReadDir(rootDir)
+			if err != nil || len(entries) != 1 {
+				t.Fatal("root fixture unavailable")
+			}
+			rootPath := filepath.Join(rootDir, entries[0].Name())
+			switch fault {
+			case "missing_root":
+				if err := os.Remove(rootPath); err != nil {
+					t.Fatal(err)
+				}
+			case "root_symlink":
+				if err := os.Rename(rootPath, rootPath+".real"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(rootPath+".real", rootPath); err != nil {
+					t.Fatal(err)
+				}
+			case "root_hardlink":
+				if err := os.Link(rootPath, rootPath+".link"); err != nil {
+					t.Fatal(err)
+				}
+			case "root_mode":
+				if err := os.Chmod(rootPath, 0620); err != nil {
+					t.Fatal(err)
+				}
+			case "record_hardlink":
+				if err := os.Link(recordPath, recordPath+".link"); err != nil {
+					t.Fatal(err)
+				}
+			case "record_mode":
+				if err := os.Chmod(recordPath, 0620); err != nil {
+					t.Fatal(err)
+				}
+			case "record_oversize":
+				if err := os.WriteFile(recordPath, []byte(strings.Repeat("x", 65537)), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "record_invalid_thread":
+				var record map[string]any
+				recordData, err := os.ReadFile(recordPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(recordData, &record); err != nil {
+					t.Fatal(err)
+				}
+				record["sessionId"] = "../../outside"
+				data, _ := json.Marshal(record)
+				if err := os.WriteFile(recordPath, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if proof, err := strictClaudeThreadProofWithRun(configDir, "/project", id, "darwin", home, run); err == nil || proof.DurableStop {
+				t.Fatalf("unsafe native file accepted: %+v err=%v", proof, err)
+			}
+		})
+	}
+}
+
+func TestStrictClaudeStrongThreadProofRejectsNativeFileChurn(t *testing.T) {
+	for _, kind := range []string{"record", "root", "root_append"} {
+		t.Run(kind, func(t *testing.T) {
+			configDir, home, id, run := strictClaudeStrongFixture(t)
+			target := filepath.Join(configDir, "sessions", id.PID+".json")
+			if kind != "record" {
+				rootDir := filepath.Join(configDir, "projects", session.ConvertToClaudeDirName("/project"))
+				entries, _ := os.ReadDir(rootDir)
+				target = filepath.Join(rootDir, entries[0].Name())
+			}
+			reads := 0
+			bind := func(path string, max int64, content bool) (strictClaudeFileBinding, *os.File, []byte, error) {
+				value, file, data, err := strictClaudeOwnedBinding(path, max, content)
+				if err == nil && path == target {
+					reads++
+					if reads == 1 {
+						if kind == "root_append" {
+							if writeErr := os.WriteFile(target, []byte("{}\nappended\n"), 0600); writeErr != nil {
+								t.Fatal(writeErr)
+							}
+							return value, file, data, err
+						}
+						if renameErr := os.Rename(target, target+".old"); renameErr != nil {
+							t.Fatal(renameErr)
+						}
+						payload := []byte("replacement\n")
+						if kind == "record" {
+							payload = data
+						}
+						if writeErr := os.WriteFile(target, payload, 0600); writeErr != nil {
+							t.Fatal(writeErr)
+						}
+					}
+				}
+				return value, file, data, err
+			}
+			if proof, err := strictClaudeThreadProofWithDeps(configDir, "/project", id, "darwin", home, run, bind); err == nil || proof.DurableStop {
+				t.Fatalf("%s churn accepted: %+v err=%v", kind, proof, err)
+			}
+		})
+	}
+}
+
+func TestStrictClaudeProcessStartParsingIsUTCAndExact(t *testing.T) {
+	parsed, err := strictParseClaudeProcessStart(" Tue  Sep   8 18:28:28 2026 \n")
+	if err != nil || parsed.Location() != time.UTC || parsed.Format(time.RFC3339) != "2026-09-08T18:28:28Z" {
+		t.Fatalf("parsed=%s err=%v", parsed, err)
+	}
+	for _, invalid := range []string{"", "1788892108", "Tue Sep 8 15:28:28 -0300 2026", "not-a-start"} {
+		if _, err := strictParseClaudeProcessStart(invalid); err == nil {
+			t.Fatalf("invalid start accepted: %q", invalid)
+		}
+	}
+}
+
+func TestStrictClaudeStrongThreadProofRejectsFinalStartChange(t *testing.T) {
+	configDir, home, id, baseRun := strictClaudeStrongFixture(t)
+	startReads := 0
+	run := func(name string, args ...string) ([]byte, error) {
+		if name == "ps" && len(args) == 4 && args[3] == "lstart=" {
+			startReads++
+			if startReads == 3 {
+				return []byte("Tue Sep  8 18:28:29 2026"), nil
+			}
+		}
+		return baseRun(name, args...)
+	}
+	if proof, err := strictClaudeThreadProofWithRun(configDir, "/project", id, "darwin", home, run); err == nil || proof.DurableStop {
+		t.Fatalf("final lstart change accepted: %+v err=%v", proof, err)
+	}
+	if startReads != 3 {
+		t.Fatalf("lstart reads=%d want=3", startReads)
+	}
+}
 
 func TestStrictClaudeVersionedNativeIdentity(t *testing.T) {
 	for _, fault := range []string{

@@ -83,6 +83,8 @@ func handleSession(profile string, args []string) {
 		handleSessionMove(profile, args[1:])
 	case "send":
 		handleSessionSend(profile, args[1:])
+	case "strict-probe":
+		handleStrictSessionProbe(profile, args[1:])
 	case "approve":
 		handleSessionApprove(profile, args[1:])
 	case "send-keys":
@@ -127,6 +129,7 @@ func printSessionHelp() {
 	fmt.Println("  switch-account <id> <account>  Switch Claude account and migrate the conversation")
 	fmt.Println("  move <id> <path>        Move session to a new path (migrates Claude history)")
 	fmt.Println("  send <id> <message>     Send a message to a running session")
+	fmt.Println("  strict-probe <full-id>  Check strict native/idle admission without terminal input")
 	fmt.Println("  approve <id> [choice]   Resolve a visible Codex approval prompt")
 	fmt.Println("  output <id>             Get the last response from a session")
 	fmt.Println("  children [id]           List sub-sessions with status + last completion")

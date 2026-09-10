@@ -177,6 +177,44 @@ func TestStrictInvalidMessageHasNoEffects(t *testing.T) {
 	}
 }
 
+func TestStrictProbeIdentityExecutesOnlyReadCommands(t *testing.T) {
+	metadata := "$1|%2|123|2|2|0|0|1|0|0|80|24|1|claude|target|@3|/project|/dev/ttys012\n"
+	commands := []string{}
+	read := func(args ...string) ([]byte, error) {
+		commands = append(commands, strings.Join(args, " "))
+		switch args[0] {
+		case "display-message":
+			return []byte(metadata), nil
+		case "list-clients":
+			return []byte("1|1\n"), nil
+		case "capture-pane":
+			return []byte(strictTestPane("claude").content), nil
+		default:
+			return nil, fmt.Errorf("unexpected command %q", args[0])
+		}
+	}
+	identity, err := strictProbeIdentity(func(pinned string) (strictSnapshot, error) {
+		return captureStrictSnapshot("target", pinned, read, func(string) bool { return true })
+	})
+	if err != nil || identity.PaneID != "%2" || identity.PID != "123" {
+		t.Fatalf("identity=%+v err=%v", identity, err)
+	}
+	want := []string{"display-message", "list-clients", "capture-pane", "display-message"}
+	if len(commands) != len(want) {
+		t.Fatalf("commands=%v", commands)
+	}
+	for index, command := range commands {
+		if !strings.HasPrefix(command, want[index]+" ") {
+			t.Fatalf("command %d=%q want %q", index, command, want[index])
+		}
+		for _, effect := range []string{"load-buffer", "paste-buffer", "send-keys", "delete-buffer", "set-buffer", "run-shell"} {
+			if strings.Contains(command, effect) {
+				t.Fatalf("probe invoked terminal effect %q in %q", effect, command)
+			}
+		}
+	}
+}
+
 func TestStrictSnapshotRequiresStableLiveRawPane(t *testing.T) {
 	good := "$1|%2|123|2|2|0|0|1|0|0|80|24|1|claude|target|@3|/project|/dev/ttys012\n"
 	for _, tc := range []struct {

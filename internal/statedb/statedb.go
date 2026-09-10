@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -103,8 +104,10 @@ const SchemaVersion = 13
 // Thread-safe for concurrent use from multiple goroutines within one process.
 // Multiple OS processes can safely read/write via WAL mode + busy timeout.
 type StateDB struct {
-	db  *sql.DB
-	pid int
+	db       *sql.DB
+	pid      int
+	readOnly bool
+	snapshot string
 	// token identifies this StateDB's owning process instance for session
 	// claim ownership (see ClaimSessions). Raw PID alone is not a safe
 	// ownership key: after this process exits, the OS can recycle its PID for
@@ -352,8 +355,221 @@ func Open(dbPath string) (*StateDB, error) {
 	return &StateDB{db: db, pid: pid, path: dbPath, token: newOwnerToken(pid)}, nil
 }
 
-// Close checkpoints WAL and closes the database.
+type registrySnapshotFingerprint struct {
+	Device, Inode, UID, GID, Links string
+	Mode                           os.FileMode
+	Size, ModTime                  int64
+	SHA                            [32]byte
+}
+
+// Session registries are control metadata, not an unbounded content store.
+// Bound the three complete reads plus private copy before allocating I/O time.
+const maxReadOnlyRegistrySnapshotBytes int64 = 512 << 20
+
+func fingerprintRegistrySource(path string, destination *os.File) (registrySnapshotFingerprint, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return registrySnapshotFingerprint{}, err
+	}
+	defer file.Close()
+	metadata := func(info os.FileInfo) (registrySnapshotFingerprint, error) {
+		value, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || !info.Mode().IsRegular() {
+			return registrySnapshotFingerprint{}, fmt.Errorf("registry source is not a regular file")
+		}
+		return registrySnapshotFingerprint{Device: fmt.Sprint(value.Dev), Inode: fmt.Sprint(value.Ino),
+			UID: fmt.Sprint(value.Uid), GID: fmt.Sprint(value.Gid), Links: fmt.Sprint(value.Nlink),
+			Mode: info.Mode(), Size: info.Size(), ModTime: info.ModTime().UnixNano()}, nil
+	}
+	beforeInfo, err := file.Stat()
+	if err != nil {
+		return registrySnapshotFingerprint{}, err
+	}
+	before, err := metadata(beforeInfo)
+	if err != nil {
+		return registrySnapshotFingerprint{}, err
+	}
+	hash := sha256.New()
+	writer := io.Writer(hash)
+	if destination != nil {
+		writer = io.MultiWriter(hash, destination)
+	}
+	written, err := io.Copy(writer, file)
+	if err != nil || written != before.Size {
+		return registrySnapshotFingerprint{}, fmt.Errorf("registry source changed while reading")
+	}
+	afterInfo, err := file.Stat()
+	if err != nil {
+		return registrySnapshotFingerprint{}, err
+	}
+	after, err := metadata(afterInfo)
+	if err != nil || before != after {
+		return registrySnapshotFingerprint{}, fmt.Errorf("registry source changed while reading")
+	}
+	linkedInfo, err := os.Lstat(path)
+	if err != nil {
+		return registrySnapshotFingerprint{}, err
+	}
+	linked, err := metadata(linkedInfo)
+	if err != nil || linked != after {
+		return registrySnapshotFingerprint{}, fmt.Errorf("registry source path changed while reading")
+	}
+	copy(after.SHA[:], hash.Sum(nil))
+	return after, nil
+}
+
+func registrySnapshotSources(dbPath string) ([]string, error) {
+	sources := []string{dbPath}
+	if _, err := os.Lstat(dbPath + "-journal"); err == nil {
+		return nil, fmt.Errorf("statedb: hot rollback journal blocks read-only snapshot")
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	present := make([]bool, 2)
+	for index, suffix := range []string{"-wal", "-shm"} {
+		info, err := os.Lstat(dbPath + suffix)
+		if err == nil {
+			if !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("statedb: read-only WAL sidecar is unsafe")
+			}
+			present[index] = true
+			sources = append(sources, dbPath+suffix)
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+	if present[0] != present[1] {
+		return nil, fmt.Errorf("statedb: read-only WAL sidecars are incomplete")
+	}
+	return sources, nil
+}
+
+func snapshotReadOnlyRegistry(dbPath string) (string, string, error) {
+	return snapshotReadOnlyRegistryWithHook(dbPath, nil)
+}
+
+func snapshotReadOnlyRegistryWithHook(dbPath string, afterCopy func() error) (string, string, error) {
+	sources, err := registrySnapshotSources(dbPath)
+	if err != nil {
+		return "", "", err
+	}
+	initial := make(map[string]registrySnapshotFingerprint, len(sources))
+	var totalSize int64
+	for _, source := range sources {
+		info, statErr := os.Lstat(source)
+		if statErr != nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxReadOnlyRegistrySnapshotBytes-totalSize {
+			return "", "", fmt.Errorf("statedb: read-only registry snapshot exceeds %d bytes", maxReadOnlyRegistrySnapshotBytes)
+		}
+		totalSize += info.Size()
+		initial[source], err = fingerprintRegistrySource(source, nil)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	directory, err := os.MkdirTemp("", "agent-deck-registry-readonly-")
+	if err != nil {
+		return "", "", err
+	}
+	cleanup := func(cause error) (string, string, error) {
+		_ = os.RemoveAll(directory)
+		return "", "", cause
+	}
+	for _, source := range sources {
+		destinationPath := filepath.Join(directory, "state.db"+strings.TrimPrefix(source, dbPath))
+		destination, openErr := os.OpenFile(destinationPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if openErr != nil {
+			return cleanup(openErr)
+		}
+		copied, copyErr := fingerprintRegistrySource(source, destination)
+		if syncErr := destination.Sync(); copyErr == nil {
+			copyErr = syncErr
+		}
+		if closeErr := destination.Close(); copyErr == nil {
+			copyErr = closeErr
+		}
+		if copyErr != nil || copied != initial[source] {
+			return cleanup(fmt.Errorf("statedb: registry changed during read-only snapshot"))
+		}
+	}
+	if afterCopy != nil {
+		if err := afterCopy(); err != nil {
+			return cleanup(err)
+		}
+	}
+	finalSources, err := registrySnapshotSources(dbPath)
+	if err != nil || strings.Join(finalSources, "\x00") != strings.Join(sources, "\x00") {
+		return cleanup(fmt.Errorf("statedb: registry sidecars changed during read-only snapshot"))
+	}
+	for _, source := range sources {
+		final, fingerprintErr := fingerprintRegistrySource(source, nil)
+		if fingerprintErr != nil || final != initial[source] {
+			return cleanup(fmt.Errorf("statedb: registry changed during read-only snapshot"))
+		}
+	}
+	return filepath.Join(directory, "state.db"), directory, nil
+}
+
+// OpenReadOnly opens a stable private snapshot of an existing current-schema
+// database. The original DB/WAL/SHM are re-fingerprinted around the copy, so
+// committed WAL rows stay visible without letting SQLite write reader marks to
+// the live SHM. It never initializes, migrates, checkpoints or saves registry.
+func OpenReadOnly(dbPath string) (*StateDB, error) {
+	if !filepath.IsAbs(dbPath) || filepath.Clean(dbPath) != dbPath {
+		return nil, fmt.Errorf("statedb: read-only path must be canonical and absolute")
+	}
+	info, err := os.Lstat(dbPath)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("statedb: read-only database unavailable")
+	}
+	snapshotPath, snapshotDir, err := snapshotReadOnlyRegistry(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("statedb: read-only snapshot: %w", err)
+	}
+	dsn := "file:" + filepath.ToSlash(snapshotPath) + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		_ = os.RemoveAll(snapshotDir)
+		return nil, fmt.Errorf("statedb: read-only open: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	fail := func(reason string, cause error) (*StateDB, error) {
+		_ = db.Close()
+		_ = os.RemoveAll(snapshotDir)
+		if cause != nil {
+			return nil, fmt.Errorf("statedb: %s: %w", reason, cause)
+		}
+		return nil, fmt.Errorf("statedb: %s", reason)
+	}
+	if err := db.Ping(); err != nil {
+		return fail("read-only connect", err)
+	}
+	var queryOnly int
+	if err := db.QueryRow("PRAGMA query_only").Scan(&queryOnly); err != nil || queryOnly != 1 {
+		return fail("read-only query guard unavailable", err)
+	}
+	var schemaVersion string
+	if err := db.QueryRow(`SELECT value FROM metadata WHERE key = 'schema_version'`).Scan(&schemaVersion); err != nil {
+		return fail("read-only schema unavailable", err)
+	}
+	if schemaVersion != strconv.Itoa(SchemaVersion) {
+		return fail("read-only schema is incompatible", nil)
+	}
+	// Any legacy backup attempt stays inside the private snapshot. It can never
+	// derive <source>.bak from this read-only handle.
+	return &StateDB{db: db, pid: os.Getpid(), path: snapshotPath, readOnly: true, snapshot: snapshotDir}, nil
+}
+
+// Close checkpoints writable WAL connections. Read-only snapshot connections
+// only close and remove their private copy; they never touch the source WAL.
 func (s *StateDB) Close() error {
+	if s.readOnly {
+		err := s.db.Close()
+		cleanupErr := os.RemoveAll(s.snapshot)
+		if err != nil {
+			return err
+		}
+		return cleanupErr
+	}
 	// Checkpoint WAL to merge it back into the main database file
 	_, _ = s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 	return s.db.Close()
