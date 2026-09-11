@@ -325,3 +325,69 @@ Option B (a local offline engine inside this same job harness) was taken on
 it. To undo: delete `<conductor>/stt-models/`, and the engine reports itself
 unavailable again on its own — voice notes go back to being saved and announced,
 never transcribed.
+
+
+## Opt-in Slavna shared conversation queue
+
+The reviewed parent deployment may enable `shared_queue.py` for Slavna. The existing Bot
+and poller remain the only Telegram owner; this adapter never reads credentials or starts an
+engine. It uses the installed shared bridge CLI and ledger for every plain text, voice/audio,
+photo and document message. Slash commands retain their existing handlers.
+
+Activation requires `/Users/francomendez/.local/share/telegram-agents/shared-slavna-ready.json`
+with exactly the reviewed `{ "head": "<40 lowercase hex>", "thread": "<exact runtime thread>" }`.
+The head must match the installation receipt and hashed CLI bundle; the thread must match
+`bots.slavna.thread` in the nonsecret bindings configuration, with `enabled` and `external` true.
+The parent alone writes that marker after reviewed installation and verified binding. Restart
+the existing bridge after enabling it. A present invalid marker fails closed; it never falls
+through to the old voice/text transport. Generation/thread changes require a reviewed bridge
+restart. Disable or roll back only after the parent stops admission and resolves/drains pending
+shared work; removing the marker blindly could bypass the text/audio barrier.
+
+When enabled, the adapter sets this dispatcher's `start_polling(handle_as_tasks=False)` so
+Telegram's next offset is requested only after download and durable ingress finish. All message
+admission is serialized, including the bounded download, preventing later text from passing an
+earlier audio note. MIME metadata is limited to 200 characters before normalization and in its
+normalized form. Legal parameters and surrounding whitespace are stripped and casing is
+normalized only within that raw bound. An unknown suffix preserves a generic octet-stream MIME.
+The existing SDK downloads into a private bounded stream. The CLI snapshots
+before temporary cleanup, deduplicates by chat/message ID, and validates the private operator,
+activation date and exact live session binding. No old response callback or transcript watcher is
+registered for this path. The central parser produces the canonical prompt echo, commentary and
+final response; shared audio produces the exact plain own-voice prompt without a Heard/metadata
+wrapper. These rules supersede the legacy voice description above while this opt-in is active.
+
+The adapter invokes the installed generation's `cli.py --state STATE ingress --bot slavna`
+with stdin JSON `{ "update": <minimal Telegram update>, "file": <optional owned path/name> }`.
+It sends only allowlisted fields, normalizes date to integer UNIX seconds, and uses message ID
+as its synthetic update ID (no central polling offset). Forwarding markers remain third-party
+provenance, without collecting third-party chats or identity objects.
+
+A singleton pump uses the same Bot for `outbox-claim --bot slavna --protocol 2`, then sends plain text or
+verified immutable documents and records `outbox-result --bot slavna --id ID --attempt ATTEMPT --state STATE`.
+Protocol 2 is the compatibility handshake: older adapters omitting that flag are rejected by
+the paired central CLI before any claim; this adapter refuses a CLI that rejects protocol 2.
+Each returned claim must include a positive integer `attempt` before any Bot call. The same
+attempt is sent with every result, so a late HTTP completion cannot overwrite an owner's
+resolution or a newer claim. A response such as `{ "state": "resolved", "applied": false }`
+is retained as the central ledger's decision, without replay or a second result write.
+Deploy only the reviewed adapter/bridge pair after their protocol 2 integration check; the
+head/thread marker still pins the installed generation and binding. Ingress and notice wire
+formats are unchanged.
+
+Claims are durable unknown before transport. Only an explicit Telegram429 schedules retry with
+`--retry-after`; the shared CLI persists jitter, pacing and the retry deadline. Verified API
+acceptance records `sent --message-id ID`; it does not prove Desktop visibility or session
+consumption. Timeouts, cancellation, restart, malformed success and lost receipt writes remain
+unknown without replay. Startup and errors direct the owner to durable receipts. All user notices also use
+`notice --bot slavna --source SOURCE --code rejected|unavailable`, with fixed text owned by the
+central CLI. There is no direct Bot fallback. If ingress and its notice cannot be durably
+recorded, the handler cancels polling before the next offset is confirmed; local logs record
+that stop without source content. The parent restores availability and restarts the existing
+bridge. Telegram redelivery uses the same durable chat/message identity; it never replays an
+unknown prompt or output send. Tests exercise the actual SDK offset generator without network.
+
+Deployment boundary: selectively install reviewed `shared_queue.py`, the `bridge_local.py`
+hook and the reapply.sh module list, preserving the live `media.py` delta d9042d68. Do not copy the whole overlay. The existing
+explicit Markdown document outbox remains independent; drain it during the parent cutover.
+No adapter code, activation marker or service has been deployed by the implementation worker.

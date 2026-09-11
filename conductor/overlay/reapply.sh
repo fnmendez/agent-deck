@@ -11,7 +11,7 @@ CDIR="$DATA/conductor"; OVERLAY="$CDIR/overlay"; BRIDGE="$CDIR/bridge.py"
 MODULE="$OVERLAY/bridge_local.py"; APPLIED="$OVERLAY/.applied-sha"
 # Every module the bridge imports, not just the entry point: a change in any of
 # them must restart the bridge, or it keeps serving the code already in memory.
-MODULES="bridge_local.py delivery.py media.py transcribe.py documents.py"
+MODULES="bridge_local.py delivery.py media.py transcribe.py documents.py shared_queue.py"
 VENV_PY="$DATA/bridge-venv/bin/python"
 PLIST="$HOME/Library/LaunchAgents/com.agentdeck.conductor-bridge.plist"
 LABEL="com.agentdeck.conductor-bridge"; LOG="$CDIR/bridge.log"
