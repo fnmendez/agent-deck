@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,7 @@ const strictLinuxFixtureThread = "00000000-0000-4000-8000-000000000001"
 type strictClaudeLinuxFixture struct {
 	home, procRoot, recordPath, rootPath      string
 	packagePath, manifestPath, executablePath string
+	machineIDPath                             string
 	inst                                      *session.Instance
 	target                                    *tmux.Session
 	id                                        tmux.StrictPaneIdentity
@@ -44,7 +46,7 @@ func newStrictClaudeLinuxFixture(t *testing.T) *strictClaudeLinuxFixture {
 	}
 	procRoot := filepath.Join(home, "proc")
 	processRoot := filepath.Join(procRoot, "123")
-	for _, directory := range []string{filepath.Join(processRoot, "fd"), filepath.Join(processRoot, "ns"), filepath.Join(procRoot, "sys", "kernel", "random")} {
+	for _, directory := range []string{filepath.Join(processRoot, "fd"), filepath.Join(processRoot, "ns")} {
 		if err := os.MkdirAll(directory, 0700); err != nil {
 			t.Fatal(err)
 		}
@@ -108,8 +110,12 @@ func newStrictClaudeLinuxFixture(t *testing.T) *strictClaudeLinuxFixture {
 	if err := os.Symlink(executable, filepath.Join(processRoot, "exe")); err != nil {
 		t.Fatal(err)
 	}
-	bootID := "e5656c24-f93c-4c9e-b4cf-e4941b9eabd0"
-	if err := os.WriteFile(filepath.Join(procRoot, "sys", "kernel", "random", "boot_id"), []byte(bootID+"\n"), 0600); err != nil {
+	machineID := "2ab45aab3716439abaf07ccb640a98ad"
+	machineIDPath := filepath.Join(home, "etc", "machine-id")
+	if err := os.MkdirAll(filepath.Dir(machineIDPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(machineIDPath, []byte(machineID+"\n"), 0444); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(procRoot, "stat"), []byte("cpu 1 2 3 4\nbtime 100000\n"), 0600); err != nil {
@@ -117,7 +123,7 @@ func newStrictClaudeLinuxFixture(t *testing.T) *strictClaudeLinuxFixture {
 	}
 	configDir := filepath.Join(home, ".claude")
 	record := strictClaudeRecord{PID: 123, SessionID: strictLinuxFixtureThread, CWD: project,
-		Tmux: "agentdeck_fixture:@22.%22", ProcStart: "10000", PIDDomain: "linux:" + bootID + ":pid:[4026532219]",
+		Tmux: "agentdeck_fixture:@22.%22", ProcStart: "10000", PIDDomain: "linux:" + machineID + ":pid:[4026532219]",
 		Version: "2.1.268", Entrypoint: "cli", Kind: "interactive", StartedAt: time.Unix(100100, 500*int64(time.Millisecond)).UnixMilli(),
 		NameSince: time.Unix(100101, 0).UnixMilli(), StatusUpdatedAt: time.Unix(100101, 0).UnixMilli(), UpdatedAt: time.Unix(100101, 0).UnixMilli(),
 		PeerProtocol: 1, PeerFeatures: []string{"fixture"}, Status: "idle"}
@@ -130,14 +136,15 @@ func newStrictClaudeLinuxFixture(t *testing.T) *strictClaudeLinuxFixture {
 	}
 	fixture := &strictClaudeLinuxFixture{
 		home: home, procRoot: procRoot, recordPath: recordPath, rootPath: rootPath,
-		packagePath: packagePath, manifestPath: manifestPath, executablePath: executable,
+		packagePath: packagePath, manifestPath: manifestPath, executablePath: executable, machineIDPath: machineIDPath,
 		inst:   &session.Instance{ID: "5e6a8428-1789103929", Tool: "claude", ProjectPath: project, TmuxSocketName: "agent-deck"},
 		target: &tmux.Session{Name: "agentdeck_fixture", SocketName: "agent-deck", InstanceID: "5e6a8428-1789103929"},
 		id: tmux.StrictPaneIdentity{SessionID: "$22", SessionName: "agentdeck_fixture", WindowID: "@22", PaneID: "%22",
-			PID: "123", Command: "claude", CWD: project, TTY: "/dev/null"},
+			PID: "123", Command: "claude", CWD: project, TTY: "/dev/null", ServerVersion: "3.6"},
 		record: record,
 		deps: strictClaudeLinuxDeps{procRoot: procRoot, bind: strictClaudeOwnedBinding, readBounded: strictLinuxReadBounded,
-			readlink: os.Readlink, open: os.Open, stat: os.Stat, packageProof: fixturePackageProof, uid: os.Getuid()},
+			readlink: os.Readlink, open: os.Open, stat: os.Stat, machineIDPath: machineIDPath, machineIDOwner: os.Getuid(),
+			packageProof: fixturePackageProof, uid: os.Getuid()},
 	}
 	fixture.writeRecord(t)
 	if err := os.WriteFile(rootPath, []byte("{}\n"), 0600); err != nil {
@@ -157,8 +164,72 @@ func (f *strictClaudeLinuxFixture) writeRecord(t *testing.T) {
 	}
 }
 
+func (f *strictClaudeLinuxFixture) writeMachineID(t *testing.T, value string) {
+	t.Helper()
+	if err := os.Chmod(f.machineIDPath, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.machineIDPath, []byte(value), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(f.machineIDPath, 0444); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (f *strictClaudeLinuxFixture) proof() (strictClaudeNativeProof, error) {
 	return strictClaudeLinuxThreadProofWithDeps(f.inst, f.target, f.id, f.home, f.deps)
+}
+
+func (f *strictClaudeLinuxFixture) useAtomicResidue(t *testing.T, content []byte, unlink bool) *os.File {
+	t.Helper()
+	if content == nil {
+		var err error
+		content, err = os.ReadFile(f.executablePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	residuePath := filepath.Join(filepath.Dir(f.packagePath), ".claude-code-XnC2OMep", "bin", "claude.exe")
+	if err := os.MkdirAll(filepath.Dir(residuePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(residuePath, content, 0755); err != nil {
+		t.Fatal(err)
+	}
+	residue, err := os.OpenFile(residuePath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { residue.Close() })
+	if unlink {
+		if err := os.Remove(residuePath); err != nil {
+			t.Fatal(err)
+		}
+	}
+	procExecutable := filepath.Join(f.procRoot, f.id.PID, "exe")
+	baseReadlink := f.deps.readlink
+	baseOpen := f.deps.open
+	f.deps.readlink = func(path string) (string, error) {
+		if path == procExecutable {
+			return residuePath + " (deleted)", nil
+		}
+		return baseReadlink(path)
+	}
+	f.deps.open = func(path string) (*os.File, error) {
+		if path != procExecutable {
+			return baseOpen(path)
+		}
+		if _, err := residue.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
+		fd, err := syscall.Dup(int(residue.Fd()))
+		if err != nil {
+			return nil, err
+		}
+		return os.NewFile(uintptr(fd), path), nil
+	}
+	return residue
 }
 
 func TestStrictClaudeLinuxExactNativeProof(t *testing.T) {
@@ -176,8 +247,70 @@ func TestStrictClaudeLinuxExactNativeProof(t *testing.T) {
 	}
 }
 
+func TestStrictClaudeLinuxAtomicUpdateResidueRequiresExactEquivalence(t *testing.T) {
+	t.Run("same_version_same_bytes", func(t *testing.T) {
+		f := newStrictClaudeLinuxFixture(t)
+		f.useAtomicResidue(t, nil, true)
+		proof, err := f.proof()
+		if err != nil || !proof.DurableStop || !strings.Contains(proof.Signature, ".claude-code-XnC2OMep/bin/claude.exe (deleted)") {
+			t.Fatalf("exact atomic-update residue refused: proof=%+v err=%v", proof, err)
+		}
+	})
+	t.Run("hash_mismatch", func(t *testing.T) {
+		f := newStrictClaudeLinuxFixture(t)
+		content, err := os.ReadFile(f.executablePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		content[0] ^= 1
+		f.useAtomicResidue(t, content, true)
+		if proof, err := f.proof(); err == nil || proof.DurableStop {
+			t.Fatalf("different residue bytes admitted: %+v err=%v", proof, err)
+		}
+	})
+	t.Run("linked_not_deleted", func(t *testing.T) {
+		f := newStrictClaudeLinuxFixture(t)
+		f.useAtomicResidue(t, nil, false)
+		if proof, err := f.proof(); err == nil || proof.DurableStop {
+			t.Fatalf("linked temp executable admitted as deleted residue: %+v err=%v", proof, err)
+		}
+	})
+	t.Run("version_mismatch", func(t *testing.T) {
+		f := newStrictClaudeLinuxFixture(t)
+		f.useAtomicResidue(t, nil, true)
+		f.record.Version = "2.1.269"
+		f.writeRecord(t)
+		if proof, err := f.proof(); err == nil || proof.DurableStop {
+			t.Fatalf("mismatched record/package version admitted: %+v err=%v", proof, err)
+		}
+	})
+}
+
+func TestStrictClaudeLinuxAtomicResiduePathGrammarIsClosed(t *testing.T) {
+	home := "/home/franco"
+	good := "/home/franco/.nvm/versions/node/v24.18.0/lib/node_modules/@anthropic-ai/.claude-code-XnC2OMep/bin/claude.exe (deleted)"
+	if !strictLinuxClaudeAtomicResidue(good, home) {
+		t.Fatal("measured atomic-update residue path rejected")
+	}
+	for _, invalid := range []string{
+		strings.TrimSuffix(good, " (deleted)"),
+		strings.Replace(good, "v24.18.0", "v24.19.0", 1),
+		strings.Replace(good, "@anthropic-ai", "other", 1),
+		strings.Replace(good, "XnC2OMep", "short", 1),
+		strings.Replace(good, "XnC2OMep", "nineChars", 1),
+		strings.Replace(good, "XnC2OMep", "bad-char", 1),
+		strings.Replace(good, "/bin/claude.exe", "/claude.exe", 1),
+		good + " extra",
+		"relative/.claude-code-XnC2OMep/bin/claude.exe (deleted)",
+	} {
+		if strictLinuxClaudeAtomicResidue(invalid, home) {
+			t.Fatalf("unmeasured residue path admitted: %s", invalid)
+		}
+	}
+}
+
 func TestStrictClaudeLinuxRejectsIndependentIdentityFaults(t *testing.T) {
-	for _, fault := range []string{"missing_process", "process_churn", "wrong_start", "wrong_wall_start", "pid_reuse", "wrong_pgid", "wrong_sid", "background", "stopped", "zombie", "wrong_uid", "wrong_executable", "wrong_instance", "wrong_socket", "wrong_session", "wrong_pane", "wrong_cwd", "wrong_tty", "wrong_domain", "unsafe_record", "duplicate_record", "unsafe_record_path", "record_churn", "missing_root", "duplicate_root", "root_churn", "package_path", "package_owner", "package_mode", "package_link", "manifest_path", "manifest_mode", "manifest_link", "manifest_content", "manifest_churn", "package_version", "executable_path", "executable_mode", "executable_link", "executable_content"} {
+	for _, fault := range []string{"missing_process", "process_churn", "wrong_start", "wrong_wall_start", "pid_reuse", "wrong_pgid", "wrong_sid", "background", "stopped", "tracing_stop", "zombie", "dead_lower", "wrong_uid", "wrong_executable", "wrong_instance", "wrong_socket", "wrong_session", "wrong_pane", "wrong_cwd", "wrong_tty", "wrong_domain", "boot_id_domain", "missing_machine_id", "wrong_machine_id", "malformed_machine_id", "machine_id_mode", "machine_id_link", "machine_id_path", "unsafe_record", "duplicate_record", "unsafe_record_path", "record_churn", "missing_root", "duplicate_root", "root_churn", "package_path", "package_owner", "package_mode", "package_link", "manifest_path", "manifest_mode", "manifest_link", "manifest_content", "manifest_churn", "package_version", "executable_path", "executable_mode", "executable_link", "executable_content"} {
 		t.Run(fault, func(t *testing.T) {
 			f := newStrictClaudeLinuxFixture(t)
 			switch fault {
@@ -211,10 +344,10 @@ func TestStrictClaudeLinuxRejectsIndependentIdentityFaults(t *testing.T) {
 				if err := os.WriteFile(path, []byte(strings.Join(fields, " ")), 0600); err != nil {
 					t.Fatal(err)
 				}
-			case "stopped", "zombie":
+			case "stopped", "tracing_stop", "zombie", "dead_lower":
 				path := filepath.Join(f.procRoot, "123", "stat")
 				data, _ := os.ReadFile(path)
-				state := map[string]string{"stopped": "T", "zombie": "Z"}[fault]
+				state := map[string]string{"stopped": "T", "tracing_stop": "t", "zombie": "Z", "dead_lower": "x"}[fault]
 				if err := os.WriteFile(path, []byte(strings.Replace(string(data), "(claude) S ", "(claude) "+state+" ", 1)), 0600); err != nil {
 					t.Fatal(err)
 				}
@@ -249,8 +382,34 @@ func TestStrictClaudeLinuxRejectsIndependentIdentityFaults(t *testing.T) {
 			case "wrong_tty":
 				f.id.TTY = "/dev/zero"
 			case "wrong_domain":
-				f.record.PIDDomain = "linux:00000000-0000-0000-0000-000000000000:pid:[1]"
+				f.record.PIDDomain = "linux:00000000000000000000000000000000:pid:[4026532219]"
 				f.writeRecord(t)
+			case "boot_id_domain":
+				f.record.PIDDomain = "linux:e5656c24-f93c-4c9e-b4cf-e4941b9eabd0:pid:[4026532219]"
+				f.writeRecord(t)
+			case "missing_machine_id":
+				if err := os.Remove(f.machineIDPath); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong_machine_id":
+				f.writeMachineID(t, "00000000000000000000000000000000\n")
+			case "malformed_machine_id":
+				f.writeMachineID(t, "e5656c24-f93c-4c9e-b4cf-e4941b9eabd0\n")
+			case "machine_id_mode":
+				if err := os.Chmod(f.machineIDPath, 0644); err != nil {
+					t.Fatal(err)
+				}
+			case "machine_id_link":
+				if err := os.Link(f.machineIDPath, f.machineIDPath+".link"); err != nil {
+					t.Fatal(err)
+				}
+			case "machine_id_path":
+				if err := os.Rename(f.machineIDPath, f.machineIDPath+".real"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(f.machineIDPath+".real", f.machineIDPath); err != nil {
+					t.Fatal(err)
+				}
 			case "unsafe_record":
 				if err := os.Chmod(f.recordPath, 0620); err != nil {
 					t.Fatal(err)
@@ -412,6 +571,19 @@ func TestStrictClaudeLinuxRejectsIndependentIdentityFaults(t *testing.T) {
 	}
 }
 
+func TestStrictClaudeLinuxProcessStateAllowlist(t *testing.T) {
+	for _, state := range []string{"R", "S", "D", "I"} {
+		if !strictLinuxProcessStateAllowed(state) {
+			t.Fatalf("live Linux state %q rejected", state)
+		}
+	}
+	for _, state := range []string{"", "T", "t", "X", "x", "Z", "W", "?"} {
+		if strictLinuxProcessStateAllowed(state) {
+			t.Fatalf("unsafe Linux state %q admitted", state)
+		}
+	}
+}
+
 func TestStrictClaudeLinuxRecordSchemaIsClosed(t *testing.T) {
 	f := newStrictClaudeLinuxFixture(t)
 	valid, err := os.ReadFile(f.recordPath)
@@ -452,6 +624,7 @@ func TestStrictClaudeLinuxWrongExpectedThreadRefuses(t *testing.T) {
 func strictClaudeLinuxFixtureVerifier(f *strictClaudeLinuxFixture) (*strictSessionAdmissionVerifier, *int) {
 	idleCalls := 0
 	v := newStrictSessionAdmissionVerifier(f.inst, f.target, strictLinuxFixtureThread)
+	v.platform, v.architecture = "linux", "amd64"
 	v.deps.native = func(*session.Instance, *tmux.Session, tmux.StrictPaneIdentity) (strictNativeThreadProof, error) {
 		proof, err := f.proof()
 		return strictNativeThreadProof{Thread: proof.Thread, Claude: proof}, err
@@ -463,10 +636,30 @@ func strictClaudeLinuxFixtureVerifier(f *strictClaudeLinuxFixture) (*strictSessi
 	return v, &idleCalls
 }
 
+func TestStrictClaudeLinuxVerifierMintsExactTmux36Authorization(t *testing.T) {
+	f := newStrictClaudeLinuxFixture(t)
+	v, _ := strictClaudeLinuxFixtureVerifier(f)
+	if _, err := v.verify(f.id); err != nil {
+		t.Fatal(err)
+	}
+	if !v.manualBracketAuthorized(f.id) {
+		t.Fatal("verified Linux Claude identity did not authorize its exact tmux 3.6 frame")
+	}
+	changed := f.id
+	changed.ServerVersion = "3.7"
+	if v.manualBracketAuthorized(changed) {
+		t.Fatal("authorization escaped its exact tmux identity")
+	}
+}
+
 func TestStrictClaudeLinuxFinalRecheckRejectsAuthorityMutation(t *testing.T) {
-	for _, mutation := range []string{"record", "record_path", "record_mode", "record_link", "root", "manifest", "executable", "executable_link", "package_mode", "package_content"} {
+	for _, mutation := range []string{"record", "record_path", "record_mode", "record_link", "machine_id_path", "root", "manifest", "executable", "atomic_residue_content", "executable_link", "package_mode", "package_content"} {
 		t.Run(mutation, func(t *testing.T) {
 			f := newStrictClaudeLinuxFixture(t)
+			var residue *os.File
+			if mutation == "atomic_residue_content" {
+				residue = f.useAtomicResidue(t, nil, true)
+			}
 			v, idleCalls := strictClaudeLinuxFixtureVerifier(f)
 			if _, err := v.verify(f.id); err != nil {
 				t.Fatal(err)
@@ -494,6 +687,17 @@ func TestStrictClaudeLinuxFinalRecheckRejectsAuthorityMutation(t *testing.T) {
 				if err := os.Link(f.recordPath, f.recordPath+".link"); err != nil {
 					t.Fatal(err)
 				}
+			case "machine_id_path":
+				data, err := os.ReadFile(f.machineIDPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(f.machineIDPath, f.machineIDPath+".old"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(f.machineIDPath, data, 0444); err != nil {
+					t.Fatal(err)
+				}
 			case "root":
 				if err := os.WriteFile(f.rootPath, []byte("changed\n"), 0600); err != nil {
 					t.Fatal(err)
@@ -509,6 +713,15 @@ func TestStrictClaudeLinuxFinalRecheckRejectsAuthorityMutation(t *testing.T) {
 				}
 				data[0] ^= 1
 				if err := os.WriteFile(f.executablePath, data, 0755); err != nil {
+					t.Fatal(err)
+				}
+			case "atomic_residue_content":
+				byteAtStart := []byte{0}
+				if _, err := residue.ReadAt(byteAtStart, 0); err != nil {
+					t.Fatal(err)
+				}
+				byteAtStart[0] ^= 1
+				if _, err := residue.WriteAt(byteAtStart, 0); err != nil {
 					t.Fatal(err)
 				}
 			case "executable_link":
@@ -534,6 +747,23 @@ func TestStrictClaudeLinuxFinalRecheckRejectsAuthorityMutation(t *testing.T) {
 				t.Fatalf("mutation reached final idle admission: calls=%d", *idleCalls)
 			}
 		})
+	}
+}
+
+func TestStrictClaudeLinuxMachineIDFormatIsExact(t *testing.T) {
+	valid := []byte("2ab45aab3716439abaf07ccb640a98ad\n")
+	if !strictLinuxMachineID.Match(valid) {
+		t.Fatal("canonical /etc/machine-id rejected")
+	}
+	for _, invalid := range [][]byte{
+		[]byte("e5656c24-f93c-4c9e-b4cf-e4941b9eabd0\n"),
+		[]byte("2AB45AAB3716439ABAF07CCB640A98AD\n"),
+		[]byte("2ab45aab3716439abaf07ccb640a98ad"),
+		[]byte("2ab45aab3716439abaf07ccb640a98ad\nextra"),
+	} {
+		if strictLinuxMachineID.Match(invalid) {
+			t.Fatalf("noncanonical machine-id accepted: %q", invalid)
+		}
 	}
 }
 

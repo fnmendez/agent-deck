@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -16,6 +17,12 @@ func strictClaudeNBSPPrompt(line string) bool {
 // for empty input. SPACE/NBSP drafts retain the mode label but lose the agents
 // suffix, including after Home. Never substitute a substring or mode-only check.
 const strictClaudeEmptyBypassHint = "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents" // #nosec G101 -- Public Claude UI label, not a credential.
+
+var strictClaudeAgentsBypassHint = regexp.MustCompile(`^⏵⏵ bypass permissions on \(shift\+tab to cycle\)( · PR #[1-9][0-9]{0,5})? · ← ([1-9]|[1-9][0-9]) agents$`)
+
+func strictClaudeEmptyBypassHintValid(line string) bool {
+	return line == strictClaudeEmptyBypassHint || strictClaudeAgentsBypassHint.MatchString(line)
+}
 
 // Claude 2.1.263 can put its session title inside the upper divider. Recognize
 // only the measured full-width shape: thin rules, one ASCII space on each side
@@ -57,7 +64,7 @@ func strictClaudeBypassComposer(s strictSnapshot, lines []string) string {
 	if strings.Trim(lines[s.y+2], " ") == "" {
 		return "claude_status_layout_unknown"
 	}
-	if strings.Trim(lines[s.y+3], " ") != strictClaudeEmptyBypassHint {
+	if !strictClaudeEmptyBypassHintValid(strings.Trim(lines[s.y+3], " ")) {
 		return "claude_empty_hint_unverified"
 	}
 	for _, row := range lines[s.y+4:] {

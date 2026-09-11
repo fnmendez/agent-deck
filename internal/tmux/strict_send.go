@@ -17,8 +17,12 @@ type StrictSendResult struct {
 }
 
 // StrictPaneIdentity is immutable for a single strict attempt. PID also detects
-// respawn-pane, which retains the pane ID. No environment or pane text is logged.
-type StrictPaneIdentity struct{ SessionID, PaneID, PID, SessionName, WindowID, CWD, Command, TTY string }
+// respawn-pane, which retains the pane ID. ServerVersion and BracketPaste bind
+// the narrow tmux 3.6 compatibility path. No environment or pane text is logged.
+type StrictPaneIdentity struct {
+	SessionID, PaneID, PID, SessionName, WindowID, CWD, Command, TTY string
+	ServerVersion, BracketPaste                                      string
+}
 type strictSnapshot struct {
 	identity      StrictPaneIdentity
 	x, y          int
@@ -27,22 +31,25 @@ type strictSnapshot struct {
 	observedAt    time.Time
 }
 type strictOps struct {
-	snapshot func(string) (strictSnapshot, error)
-	stage    func(string) (string, error)
-	drop     func(string)
-	submit   func(string, string) error
+	snapshot                func(string) (strictSnapshot, error)
+	stage                   func(string) (string, error)
+	drop                    func(string)
+	submit                  func(string, string) error
+	submitManualBracket     func(string, string) error
+	manualBracketAuthorized func(StrictPaneIdentity) bool
 }
 
 // StrictSendOnce performs only an explicitly guarded, single terminal attempt.
 // verify must re-read the native thread identity and idle evidence without any
 // terminal mutation. There is an unavoidable race between observation and effect;
 // even successful tmux commands return unknown, not delivered.
-func (s *Session) StrictSendOnce(tool, message string, verify func(StrictPaneIdentity) error) (StrictSendResult, error) {
+func (s *Session) StrictSendOnce(tool, message string, verify func(StrictPaneIdentity) error,
+	manualBracketAuthorized func(StrictPaneIdentity) bool) (StrictSendResult, error) {
 	if s.VimMode {
 		return strictRefusal("vim_mode")
 	}
 	return strictSendOnce(tool, message, verify, strictOps{
-		snapshot: s.strictSnapshot,
+		snapshot: s.strictSnapshot, manualBracketAuthorized: manualBracketAuthorized,
 		stage: func(body string) (string, error) {
 			name := pasteBufferName()
 			cmd := keySenderExec(s.SocketName, "load-buffer", "-b", name, "-")
@@ -53,11 +60,24 @@ func (s *Session) StrictSendOnce(tool, message string, verify func(StrictPaneIde
 		submit: func(pane, buffer string) error {
 			// One server command list, no delay, extra Enter, mode switch or fallback.
 			// Enter can be swallowed by an async paste handler: this remains unknown.
-			return runSendKeysBounded(keySenderExec(s.SocketName,
-				"paste-buffer", "-p", "-r", "-d", "-b", buffer, "-t", pane,
-				";", "send-keys", "-t", pane, "Enter"))
+			return runSendKeysBounded(keySenderExec(s.SocketName, strictPasteSubmitArgs(pane, buffer, false)...))
+		},
+		submitManualBracket: func(pane, buffer string) error {
+			// tmux 3.6 cannot expose bracket_paste_flag. The verified compatibility
+			// path stages exactly one explicit bracket pair and pastes it raw so
+			// multiline bytes never become independent Enter key events.
+			return runSendKeysBounded(keySenderExec(s.SocketName, strictPasteSubmitArgs(pane, buffer, true)...))
 		},
 	})
+}
+
+func strictPasteSubmitArgs(pane, buffer string, manualBracket bool) []string {
+	args := []string{"paste-buffer"}
+	if !manualBracket {
+		args = append(args, "-p")
+	}
+	return append(args, "-r", "-d", "-b", buffer, "-t", pane,
+		";", "send-keys", "-t", pane, "Enter")
 }
 
 func strictRefusal(reason string) (StrictSendResult, error) {
@@ -89,8 +109,18 @@ func strictSendOnce(tool, message string, verify func(StrictPaneIdentity) error,
 	if err := verify(first.identity); err != nil {
 		return strictRefusal("identity_or_idle_unverified")
 	}
-	// Staging is private tmux buffer memory, not a terminal effect. Always clean it.
-	buffer, err := ops.stage(message)
+	// Staging is private tmux buffer memory, not a terminal effect. tmux 3.6
+	// compatibility explicitly frames the already control-free payload instead
+	// of treating its unavailable bracket_paste_flag as positive evidence.
+	manualBracket := strictTmux36ManualBracket(first.identity)
+	if manualBracket && (ops.manualBracketAuthorized == nil || !ops.manualBracketAuthorized(first.identity)) {
+		return strictRefusal("bracket_paste_unverified")
+	}
+	stagedMessage := message
+	if manualBracket {
+		stagedMessage = "\x1b[200~" + message + "\x1b[201~"
+	}
+	buffer, err := ops.stage(stagedMessage)
 	if buffer != "" {
 		defer ops.drop(buffer)
 	}
@@ -116,14 +146,25 @@ func strictSendOnce(tool, message string, verify func(StrictPaneIdentity) error,
 		return strictRefusal("snapshot_expired")
 	}
 	result := StrictSendResult{Delivery: "unknown", Attempted: true, Reason: "terminal_attempted"}
-	if err := ops.submit(last.identity.PaneID, buffer); err != nil {
+	submit := ops.submit
+	if manualBracket {
+		submit = ops.submitManualBracket
+	}
+	if submit == nil {
+		return strictRefusal("transport_unavailable")
+	}
+	if err := submit(last.identity.PaneID, buffer); err != nil {
 		result.Reason = "terminal_error"
 		return result, fmt.Errorf("strict terminal attempt has unknown outcome")
 	}
 	return result, nil
 }
 
-const strictMetadataFormat = "#{session_id}|#{pane_id}|#{pane_pid}|#{cursor_x}|#{cursor_y}|#{pane_dead}|#{pane_in_mode}|#{cursor_flag}|#{pane_input_off}|#{alternate_on}|#{pane_width}|#{pane_height}|#{bracket_paste_flag}|#{pane_current_command}|#{session_name}|#{window_id}|#{pane_current_path}|#{pane_tty}"
+const strictMetadataFormat = "#{session_id}|#{pane_id}|#{pane_pid}|#{cursor_x}|#{cursor_y}|#{pane_dead}|#{pane_in_mode}|#{cursor_flag}|#{pane_input_off}|#{alternate_on}|#{pane_width}|#{pane_height}|#{bracket_paste_flag}|#{pane_current_command}|#{session_name}|#{window_id}|#{pane_current_path}|#{pane_tty}|#{version}"
+
+func strictTmux36ManualBracket(id StrictPaneIdentity) bool {
+	return id.ServerVersion == "3.6" && id.BracketPaste == ""
+}
 
 func (s *Session) strictSnapshot(pinned string) (strictSnapshot, error) {
 	return captureStrictSnapshot(s.Name, pinned, s.runBoundedOutput, func(target string) bool {
@@ -132,17 +173,20 @@ func (s *Session) strictSnapshot(pinned string) (strictSnapshot, error) {
 	})
 }
 
-// StrictProbeIdentity performs the read-only half of the first strict snapshot
-// and returns metadata only. It cannot stage, submit, clear, restore or expose
-// pane text. A probe does not certify the later composer/final-snapshot checks.
-func (s *Session) StrictProbeIdentity() (StrictPaneIdentity, error) {
-	return strictProbeIdentity(s.strictSnapshot)
+// StrictProbeIdentity performs one full read-only strict observation, including
+// the composer guard, and returns metadata only. It cannot stage, submit, clear,
+// restore or expose pane text. The command-level probe performs this twice.
+func (s *Session) StrictProbeIdentity(tool string) (StrictPaneIdentity, error) {
+	return strictProbeIdentity(tool, s.strictSnapshot)
 }
 
-func strictProbeIdentity(snapshot func(string) (strictSnapshot, error)) (StrictPaneIdentity, error) {
+func strictProbeIdentity(tool string, snapshot func(string) (strictSnapshot, error)) (StrictPaneIdentity, error) {
 	observed, err := snapshot("")
 	if err != nil {
 		return StrictPaneIdentity{}, err
+	}
+	if reason := strictEmptyComposer(tool, observed); reason != "" {
+		return StrictPaneIdentity{}, fmt.Errorf("strict composer unavailable: %s", reason)
 	}
 	return observed.identity, nil
 }
@@ -156,14 +200,16 @@ func captureStrictSnapshot(name, pinned string, read func(...string) ([]byte, er
 		return strictSnapshot{}, err
 	}
 	fields := strings.Split(strings.TrimSpace(string(before)), "|")
-	if len(fields) != 18 || !strings.HasPrefix(fields[0], "$") || !strings.HasPrefix(fields[1], "%") {
+	if len(fields) != 19 || !strings.HasPrefix(fields[0], "$") || !strings.HasPrefix(fields[1], "%") {
 		return strictSnapshot{}, fmt.Errorf("invalid metadata")
 	}
 	if pinned != "" && fields[1] != pinned {
 		return strictSnapshot{}, fmt.Errorf("active pane changed")
 	}
 	target := fields[1]
-	if fields[5] != "0" || fields[6] != "0" || fields[7] != "1" || fields[8] != "0" || fields[12] != "1" {
+	bracketKnown := fields[12] == "1"
+	bracket36Candidate := fields[12] == "" && fields[18] == "3.6"
+	if fields[5] != "0" || fields[6] != "0" || fields[7] != "1" || fields[8] != "0" || !bracketKnown && !bracket36Candidate {
 		return strictSnapshot{}, fmt.Errorf("pane unavailable")
 	}
 	if _, err := strconv.Atoi(fields[2]); err != nil {
@@ -191,7 +237,10 @@ func captureStrictSnapshot(name, pinned string, read func(...string) ([]byte, er
 	if err != nil || string(before) != string(after) {
 		return strictSnapshot{}, fmt.Errorf("pane changed during capture")
 	}
-	return strictSnapshot{identity: StrictPaneIdentity{fields[0], fields[1], fields[2], fields[14], fields[15], fields[16], fields[13], fields[17]}, x: x, y: y, width: width, height: height, content: string(pane), observedAt: observedAt}, nil
+	return strictSnapshot{identity: StrictPaneIdentity{SessionID: fields[0], PaneID: fields[1], PID: fields[2],
+		SessionName: fields[14], WindowID: fields[15], CWD: fields[16], Command: fields[13], TTY: fields[17],
+		ServerVersion: fields[18], BracketPaste: fields[12]}, x: x, y: y, width: width, height: height,
+		content: string(pane), observedAt: observedAt}, nil
 }
 
 // StrictThreadEnvironment reads only the native Codex thread anchor, uncached.

@@ -35,11 +35,15 @@ func safeStrictProbeReason(value string) bool {
 }
 
 type strictClaudeNativeProof struct {
-	Thread           string
-	ProcessStartedAt time.Time
-	CWD              string
-	Signature        string
-	DurableStop      bool
+	Thread                string
+	ProcessStartedAt      time.Time
+	CWD                   string
+	Signature             string
+	DurableStop           bool
+	NativeStatus          string
+	NativeStatusUpdatedAt int64
+	NativeStartedAt       int64
+	NativeStatusStable    bool
 }
 
 type strictNativeThreadProof struct {
@@ -62,13 +66,18 @@ type strictAdmissionDeps struct {
 }
 
 type strictSessionAdmissionVerifier struct {
-	inst           *session.Instance
-	target         *tmux.Session
-	expected       string
-	previousProof  string
-	previousStrong bool
-	passes         int
-	deps           strictAdmissionDeps
+	inst                  *session.Instance
+	target                *tmux.Session
+	expected              string
+	previousProof         string
+	previousStrong        bool
+	passes                int
+	platform              string
+	architecture          string
+	manualBracketIdentity tmux.StrictPaneIdentity
+	previousIdleAuthority string
+	previousNativeIdle    string
+	deps                  strictAdmissionDeps
 }
 
 func strictNativeThread(inst *session.Instance, target *tmux.Session, id tmux.StrictPaneIdentity) (strictNativeThreadProof, error) {
@@ -84,11 +93,12 @@ func strictNativeThread(inst *session.Instance, target *tmux.Session, id tmux.St
 }
 
 func newStrictSessionAdmissionVerifier(inst *session.Instance, target *tmux.Session, expected string) *strictSessionAdmissionVerifier {
-	return &strictSessionAdmissionVerifier{inst: inst, target: target, expected: expected, deps: strictAdmissionDeps{
-		native: strictNativeThread,
-		codex:  strictCodexRuntimeProof,
-		idle:   session.StrictSendIdle,
-	}}
+	return &strictSessionAdmissionVerifier{inst: inst, target: target, expected: expected,
+		platform: runtime.GOOS, architecture: runtime.GOARCH, deps: strictAdmissionDeps{
+			native: strictNativeThread,
+			codex:  strictCodexRuntimeProof,
+			idle:   session.StrictSendIdle,
+		}}
 }
 
 func (v *strictSessionAdmissionVerifier) verify(id tmux.StrictPaneIdentity) (strictAdmissionObservation, error) {
@@ -155,10 +165,34 @@ func (v *strictSessionAdmissionVerifier) verify(id tmux.StrictPaneIdentity) (str
 				ProcessStartedAt: native.Claude.ProcessStartedAt, CWD: native.Claude.CWD}
 		}
 	}
+	if !strictBracketPasteAdmission(v.platform, v.architecture, v.inst.Tool, id, observed.DurableNative) {
+		return observed, fmt.Errorf("bracket_paste_unverified")
+	}
 	decision := v.deps.idle(v.inst.ID, v.inst.Tool, v.expected, evidence)
+	idleAuthority := "hook"
+	if !decision.Admitted && decision.Reason == "hook_unavailable" &&
+		strictLinuxNativeIdleAdmission(v.platform, v.architecture, v.inst.Tool, native.Claude, time.Now()) {
+		idleAuthority = "linux_native_status"
+		nativeIdle := fmt.Sprintf("%s:%d:%d", native.Claude.NativeStatus, native.Claude.NativeStatusUpdatedAt,
+			native.Claude.NativeStartedAt)
+		if v.passes == 1 {
+			v.previousNativeIdle = nativeIdle
+		} else if v.previousNativeIdle != nativeIdle {
+			return observed, fmt.Errorf("native_status_changed")
+		}
+		decision = session.StrictSendIdleDecision{Admitted: true, Reason: "native_idle_without_hook"}
+	}
 	observed.IdleDecision = decision
 	if !decision.Admitted {
 		return observed, fmt.Errorf("%s", decision.Reason)
+	}
+	if v.passes == 1 {
+		v.previousIdleAuthority = idleAuthority
+	} else if v.previousIdleAuthority != idleAuthority {
+		return observed, fmt.Errorf("idle_authority_changed")
+	}
+	if id.BracketPaste == "" && id.ServerVersion == "3.6" {
+		v.manualBracketIdentity = id
 	}
 	observed.Thread = native.Thread
 	return observed, nil
@@ -167,6 +201,10 @@ func (v *strictSessionAdmissionVerifier) verify(id tmux.StrictPaneIdentity) (str
 func (v *strictSessionAdmissionVerifier) callback(id tmux.StrictPaneIdentity) error {
 	_, err := v.verify(id)
 	return err
+}
+
+func (v *strictSessionAdmissionVerifier) manualBracketAuthorized(id tmux.StrictPaneIdentity) bool {
+	return v != nil && v.manualBracketIdentity == id && id.BracketPaste == "" && id.ServerVersion == "3.6"
 }
 
 func handleStrictSessionSend(out *CLIOutput, inst *session.Instance, expectedThread, message string) {
@@ -179,7 +217,7 @@ func handleStrictSessionSend(out *CLIOutput, inst *session.Instance, expectedThr
 	}
 	if strictToolPlatformSupported(runtime.GOOS, runtime.GOARCH, inst.Tool) && target != nil && strictThreadUUID.MatchString(expectedThread) {
 		verifier := newStrictSessionAdmissionVerifier(inst, target, expectedThread)
-		result, sendErr = target.StrictSendOnce(inst.Tool, message, verifier.callback)
+		result, sendErr = target.StrictSendOnce(inst.Tool, message, verifier.callback, verifier.manualBracketAuthorized)
 	}
 	data := map[string]interface{}{"success": sendErr == nil, "delivery": result.Delivery, "attempted": result.Attempted, "reason": result.Reason, "session_id": inst.ID, "expected_thread": expectedThread}
 	if sendErr != nil {
@@ -203,10 +241,21 @@ func strictProbeTime(value time.Time) string {
 	return value.Format(time.RFC3339)
 }
 
-func runStrictAdmissionProbe(verifier *strictSessionAdmissionVerifier, id tmux.StrictPaneIdentity) ([2]strictAdmissionObservation, error) {
+func runStrictAdmissionProbe(verifier *strictSessionAdmissionVerifier,
+	observe func() (tmux.StrictPaneIdentity, error)) ([2]strictAdmissionObservation, error) {
 	var observations [2]strictAdmissionObservation
+	var firstIdentity tmux.StrictPaneIdentity
 	var err error
 	for index := range observations {
+		id, observeErr := observe()
+		if observeErr != nil {
+			return observations, fmt.Errorf("tmux_observation_unavailable")
+		}
+		if index == 0 {
+			firstIdentity = id
+		} else if firstIdentity != id {
+			return observations, fmt.Errorf("pane_changed")
+		}
 		observations[index], err = verifier.verify(id)
 		if err != nil {
 			return observations, err
@@ -276,7 +325,7 @@ func handleStrictSessionProbe(profile string, args []string) {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
 	}
-	if !strictToolPlatformSupported(runtime.GOOS, runtime.GOARCH, inst.Tool) || inst.IsSSH() || !inst.Exists() {
+	if !strictProbeTargetSupported(runtime.GOOS, runtime.GOARCH, inst.Tool) || inst.IsSSH() || !inst.Exists() {
 		out.Error("strict probe requires one exact live local Claude session ID", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -285,13 +334,10 @@ func handleStrictSessionProbe(profile string, args []string) {
 		out.Error("strict probe target unavailable", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
-	identity, err := target.StrictProbeIdentity()
-	if err != nil {
-		out.Error("strict probe identity unavailable", ErrCodeDeliveryFailed)
-		os.Exit(1)
-	}
 	verifier := newStrictSessionAdmissionVerifier(inst, target, "")
-	observations, probeErr := runStrictAdmissionProbe(verifier, identity)
+	observations, probeErr := runStrictAdmissionProbe(verifier, func() (tmux.StrictPaneIdentity, error) {
+		return target.StrictProbeIdentity(inst.Tool)
+	})
 	reason := ""
 	if probeErr != nil && safeStrictProbeReason(probeErr.Error()) {
 		reason = probeErr.Error()
@@ -320,6 +366,28 @@ func handleStrictSessionProbe(profile string, args []string) {
 		os.Exit(1)
 	}
 	out.Success("Strict admission probe passed without terminal effects", data)
+}
+
+func strictProbeTargetSupported(platform, architecture, tool string) bool {
+	return tool == "claude" && strictToolPlatformSupported(platform, architecture, tool)
+}
+
+func strictBracketPasteAdmission(platform, architecture, tool string, id tmux.StrictPaneIdentity, durableNative bool) bool {
+	if id.BracketPaste == "1" {
+		return true
+	}
+	return id.BracketPaste == "" && id.ServerVersion == "3.6" && platform == "linux" && architecture == "amd64" &&
+		tool == "claude" && durableNative
+}
+
+func strictLinuxNativeIdleAdmission(platform, architecture, tool string, proof strictClaudeNativeProof, now time.Time) bool {
+	if platform != "linux" || architecture != "amd64" || tool != "claude" || !proof.DurableStop ||
+		proof.Signature == "" || !proof.NativeStatusStable || proof.NativeStatus != "idle" ||
+		proof.NativeStartedAt <= 0 || proof.NativeStatusUpdatedAt < proof.NativeStartedAt {
+		return false
+	}
+	statusTime := time.UnixMilli(proof.NativeStatusUpdatedAt)
+	return !statusTime.Before(proof.ProcessStartedAt) && !statusTime.After(now.Add(5*time.Second))
 }
 
 func strictClaudeThreadProof(inst *session.Instance, target *tmux.Session, id tmux.StrictPaneIdentity) (strictClaudeNativeProof, error) {
