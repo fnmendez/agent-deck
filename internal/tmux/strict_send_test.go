@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,8 @@ func TestStrictLinuxNativeRefusalVocabularyHasNoTerminalEffect(t *testing.T) {
 		"executable_path", "executable_owner", "executable_mode", "executable_link", "executable_content", "final_record_mutation",
 		"final_record_path", "final_record_mode", "final_record_link", "final_root_mutation", "final_manifest_mutation",
 		"final_executable_mutation", "final_executable_link", "final_package_mode", "final_package_content",
+		"atomic_residue_path", "atomic_residue_hash", "atomic_residue_link", "atomic_residue_version", "atomic_residue_final_content",
+		"hookless_missing_status", "hookless_invalid_status", "hookless_busy", "hookless_status_change", "hookless_timestamp_change", "hookless_authority_change",
 	}
 	for _, fault := range faults {
 		for _, refusalPass := range []int{1, 2} {
@@ -240,14 +243,14 @@ func TestStrictInvalidMessageHasNoEffects(t *testing.T) {
 			t.Fatalf("invalid input accepted: %+v", result)
 		}
 	}
-	result, err := (&Session{VimMode: true}).StrictSendOnce("claude", "hello", nil)
+	result, err := (&Session{VimMode: true}).StrictSendOnce("claude", "hello", nil, nil)
 	if err == nil || result.Attempted {
 		t.Fatal("vim mode was mutated")
 	}
 }
 
 func TestStrictProbeIdentityExecutesOnlyReadCommands(t *testing.T) {
-	metadata := "$1|%2|123|2|2|0|0|1|0|0|80|24|1|claude|target|@3|/project|/dev/ttys012\n"
+	metadata := "$1|%2|123|2|2|0|0|1|0|0|80|24|1|claude|target|@3|/project|/dev/ttys012|3.7b\n"
 	commands := []string{}
 	read := func(args ...string) ([]byte, error) {
 		commands = append(commands, strings.Join(args, " "))
@@ -262,7 +265,7 @@ func TestStrictProbeIdentityExecutesOnlyReadCommands(t *testing.T) {
 			return nil, fmt.Errorf("unexpected command %q", args[0])
 		}
 	}
-	identity, err := strictProbeIdentity(func(pinned string) (strictSnapshot, error) {
+	identity, err := strictProbeIdentity("claude", func(pinned string) (strictSnapshot, error) {
 		return captureStrictSnapshot("target", pinned, read, func(string) bool { return true })
 	})
 	if err != nil || identity.PaneID != "%2" || identity.PID != "123" {
@@ -284,8 +287,16 @@ func TestStrictProbeIdentityExecutesOnlyReadCommands(t *testing.T) {
 	}
 }
 
+func TestStrictProbeIdentityRequiresEmptyComposerWithoutEffects(t *testing.T) {
+	snapshot := strictTestPane("claude")
+	snapshot.content = strings.Replace(snapshot.content, "❯ ", "❯ native draft", 1)
+	if _, err := strictProbeIdentity("claude", func(string) (strictSnapshot, error) { return snapshot, nil }); err == nil {
+		t.Fatal("probe admitted a nonempty composer")
+	}
+}
+
 func TestStrictSnapshotRequiresStableLiveRawPane(t *testing.T) {
-	good := "$1|%2|123|2|2|0|0|1|0|0|80|24|1|claude|target|@3|/project|/dev/ttys012\n"
+	good := "$1|%2|123|2|2|0|0|1|0|0|80|24|1|claude|target|@3|/project|/dev/ttys012|3.7b\n"
 	for _, tc := range []struct {
 		name          string
 		field         int
@@ -343,6 +354,200 @@ func TestStrictSnapshotRequiresStableLiveRawPane(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatal("unsafe snapshot accepted")
+			}
+		})
+	}
+}
+
+func TestStrictTmux36LiveMetadataShapeIsCompatibilityCandidate(t *testing.T) {
+	metadata := "$22|%22|2959037|2|46|0|0|1|0|1|200|50||claude|agentdeck_causalert-main_cabf0cf6|@22|/home/franco/Software/products/causalert|/dev/pts/10|3.6\n"
+	read := func(args ...string) ([]byte, error) {
+		switch args[0] {
+		case "display-message":
+			return []byte(metadata), nil
+		case "list-clients":
+			return nil, nil
+		case "capture-pane":
+			return []byte(strings.Repeat("\n", 50)), nil
+		default:
+			return nil, fmt.Errorf("unexpected command %q", args[0])
+		}
+	}
+	snapshot, err := captureStrictSnapshot("agentdeck_causalert-main_cabf0cf6", "", read, func(string) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.identity.ServerVersion != "3.6" || snapshot.identity.BracketPaste != "" ||
+		snapshot.identity.PID != "2959037" || snapshot.identity.Command != "claude" || snapshot.width != 200 || snapshot.height != 50 {
+		t.Fatalf("live tmux 3.6 identity was not preserved: %+v", snapshot)
+	}
+}
+
+func TestStrictTmux36Claude268LiveComposerProbeShape(t *testing.T) {
+	metadata := "$22|%22|2959037|2|46|0|0|1|0|1|200|50||claude|agentdeck_causalert-main_cabf0cf6|@22|/home/franco/Software/products/causalert|/dev/pts/10|3.6\n"
+	pane := strictClaudeFixtureGeometry("❯\u00a0",
+		"⏵⏵ bypass permissions on (shift+tab to cycle) · PR #978 · ← 2 agents", 200, 50, 46).content
+	read := func(args ...string) ([]byte, error) {
+		switch args[0] {
+		case "display-message":
+			return []byte(metadata), nil
+		case "list-clients":
+			return nil, nil
+		case "capture-pane":
+			return []byte(pane), nil
+		}
+		return nil, errors.New("unexpected command")
+	}
+	identity, err := strictProbeIdentity("claude", func(pinned string) (strictSnapshot, error) {
+		return captureStrictSnapshot("agentdeck_causalert-main_cabf0cf6", pinned, read, func(string) bool { return true })
+	})
+	if err != nil || identity.ServerVersion != "3.6" || identity.BracketPaste != "" || identity.PID != "2959037" {
+		t.Fatalf("live Claude 2.1.268 probe shape refused: identity=%+v err=%v", identity, err)
+	}
+}
+
+func TestStrictTmux36UnknownBracketRequiresExactStableVersion(t *testing.T) {
+	base := "$22|%22|2959037|2|46|0|0|1|0|1|200|50||claude|agentdeck_causalert-main_cabf0cf6|@22|/project|/dev/pts/10|3.6\n"
+	for _, fault := range []string{"wrong_version", "missing_version", "known_false", "version_changed"} {
+		t.Run(fault, func(t *testing.T) {
+			displays := 0
+			read := func(args ...string) ([]byte, error) {
+				switch args[0] {
+				case "display-message":
+					displays++
+					metadata := base
+					switch fault {
+					case "wrong_version":
+						metadata = strings.Replace(metadata, "|3.6\n", "|3.5\n", 1)
+					case "missing_version":
+						metadata = strings.TrimSuffix(metadata, "3.6\n") + "\n"
+					case "known_false":
+						metadata = strings.Replace(metadata, "|50||claude|", "|50|0|claude|", 1)
+					case "version_changed":
+						if displays == 2 {
+							metadata = strings.Replace(metadata, "|3.6\n", "|3.7\n", 1)
+						}
+					}
+					return []byte(metadata), nil
+				case "list-clients":
+					return nil, nil
+				case "capture-pane":
+					return []byte(strings.Repeat("\n", 50)), nil
+				}
+				return nil, errors.New("unexpected command")
+			}
+			if _, err := captureStrictSnapshot("agentdeck_causalert-main_cabf0cf6", "", read, func(string) bool { return true }); err == nil {
+				t.Fatal("unknown or unstable bracket state admitted")
+			}
+		})
+	}
+}
+
+func TestStrictTmux36ManualFramePreservesMultilinePaste(t *testing.T) {
+	snapshot := strictTestPane("claude")
+	snapshot.identity.ServerVersion = "3.6"
+	snapshot.identity.BracketPaste = ""
+	message := "first line\nsecond line"
+	verifies, stages, drops, normalSubmits, manualSubmits := 0, 0, 0, 0, 0
+	result, err := strictSendOnce("claude", message, func(StrictPaneIdentity) error {
+		verifies++
+		return nil
+	}, strictOps{
+		snapshot: func(string) (strictSnapshot, error) { snapshot.observedAt = time.Now(); return snapshot, nil },
+		stage: func(body string) (string, error) {
+			stages++
+			if body != "\x1b[200~"+message+"\x1b[201~" {
+				t.Fatalf("manual bracket frame=%q", body)
+			}
+			return "private-fixture", nil
+		},
+		drop:                    func(string) { drops++ },
+		manualBracketAuthorized: func(StrictPaneIdentity) bool { return true },
+		submit: func(string, string) error {
+			normalSubmits++
+			return nil
+		},
+		submitManualBracket: func(string, string) error {
+			manualSubmits++
+			return nil
+		},
+	})
+	if err != nil || !result.Attempted || result.Delivery != "unknown" || verifies != 2 || stages != 1 || drops != 1 || normalSubmits != 0 || manualSubmits != 1 {
+		t.Fatalf("manual bracket result=%+v err=%v verifies=%d stages=%d drops=%d normal=%d manual=%d",
+			result, err, verifies, stages, drops, normalSubmits, manualSubmits)
+	}
+	wantManual := []string{"paste-buffer", "-r", "-d", "-b", "private-fixture", "-t", "%2", ";", "send-keys", "-t", "%2", "Enter"}
+	if got := strictPasteSubmitArgs("%2", "private-fixture", true); !reflect.DeepEqual(got, wantManual) {
+		t.Fatalf("manual argv=%v want=%v", got, wantManual)
+	}
+	if got := strictPasteSubmitArgs("%2", "private-fixture", false); len(got) < 2 || got[1] != "-p" {
+		t.Fatalf("known bracket path lost tmux framing: %v", got)
+	}
+}
+
+func TestStrictTmux36ManualFrameRequiresVerifierAuthorization(t *testing.T) {
+	for _, authorization := range []string{"missing", "refused"} {
+		t.Run(authorization, func(t *testing.T) {
+			snapshot := strictTestPane("claude")
+			snapshot.identity.ServerVersion = "3.6"
+			stages, submits := 0, 0
+			ops := strictOps{
+				snapshot: func(string) (strictSnapshot, error) { return snapshot, nil },
+				stage:    func(string) (string, error) { stages++; return "private", nil },
+				submitManualBracket: func(string, string) error {
+					submits++
+					return nil
+				},
+			}
+			if authorization == "refused" {
+				ops.manualBracketAuthorized = func(StrictPaneIdentity) bool { return false }
+			}
+			result, err := strictSendOnce("claude", "first\nsecond", func(StrictPaneIdentity) error { return nil }, ops)
+			if err == nil || result.Attempted || stages != 0 || submits != 0 || result.Reason != "bracket_paste_unverified" {
+				t.Fatalf("unauthorized manual frame crossed boundary: result=%+v err=%v stages=%d submits=%d",
+					result, err, stages, submits)
+			}
+		})
+	}
+}
+
+func TestStrictTmux36MetadataMutationAfterStagingNeverSubmits(t *testing.T) {
+	for _, mutation := range []string{"version", "bracket_flag"} {
+		t.Run(mutation, func(t *testing.T) {
+			base := strictTestPane("claude")
+			base.identity.ServerVersion = "3.6"
+			captures, stages, drops, submits := 0, 0, 0, 0
+			result, err := strictSendOnce("claude", "first\nsecond", func(StrictPaneIdentity) error { return nil }, strictOps{
+				snapshot: func(string) (strictSnapshot, error) {
+					captures++
+					current := base
+					if captures == 2 {
+						if mutation == "version" {
+							current.identity.ServerVersion = "3.7"
+						} else {
+							current.identity.BracketPaste = "1"
+						}
+					}
+					current.observedAt = time.Now()
+					return current, nil
+				},
+				stage: func(body string) (string, error) {
+					stages++
+					if body != "\x1b[200~first\nsecond\x1b[201~" {
+						t.Fatal("multiline body was not manually framed")
+					}
+					return "private-fixture", nil
+				},
+				drop:                    func(string) { drops++ },
+				manualBracketAuthorized: func(StrictPaneIdentity) bool { return true },
+				submitManualBracket: func(string, string) error {
+					submits++
+					return nil
+				},
+			})
+			if err == nil || result.Attempted || stages != 1 || drops != 1 || submits != 0 {
+				t.Fatalf("metadata mutation crossed effect boundary: result=%+v err=%v stages=%d drops=%d submits=%d",
+					result, err, stages, drops, submits)
 			}
 		})
 	}
@@ -557,7 +762,7 @@ func TestStrictCodexGeometryBeforeStagingThroughCapture(t *testing.T) {
 			}
 			reads, stages, drops, submits := 0, 0, 0, 0
 			metadata := func(w, h, cy int) string {
-				return fmt.Sprintf("$5|%%9|123|2|%d|0|0|1|0|0|%d|%d|1|node|fixture|@2|/fixture|/dev/ttys015\n", cy, w, h)
+				return fmt.Sprintf("$5|%%9|123|2|%d|0|0|1|0|0|%d|%d|1|node|fixture|@2|/fixture|/dev/ttys015|3.7b\n", cy, w, h)
 			}
 			read := func(args ...string) ([]byte, error) {
 				switch args[0] {

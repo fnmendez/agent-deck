@@ -23,6 +23,14 @@ type strictRegistryFingerprint struct {
 	SHA           [32]byte
 }
 
+func strictVerifiedPaneIdentity() tmux.StrictPaneIdentity {
+	return tmux.StrictPaneIdentity{ServerVersion: "3.7b", BracketPaste: "1"}
+}
+
+func strictFixedProbeObservation(id tmux.StrictPaneIdentity) func() (tmux.StrictPaneIdentity, error) {
+	return func() (tmux.StrictPaneIdentity, error) { return id, nil }
+}
+
 func fingerprintStrictRegistry(t *testing.T, directory string) map[string]strictRegistryFingerprint {
 	t.Helper()
 	entries, err := os.ReadDir(directory)
@@ -228,9 +236,109 @@ func TestStrictAdmissionFreshThenStaleRequiresStrongBothPasses(t *testing.T) {
 			return session.StrictSendIdleDecision{Admitted: true, DurableStop: pass == 2,
 				Reason: map[bool]string{true: "durable_stop", false: "fresh_hook"}[pass == 2]}
 		})
-	observations, err := runStrictAdmissionProbe(v, tmux.StrictPaneIdentity{})
+	observations, err := runStrictAdmissionProbe(v, strictFixedProbeObservation(strictVerifiedPaneIdentity()))
 	if err != nil || v.passes != 2 || observations[0].NativeProof != "same" || !observations[1].IdleDecision.DurableStop {
 		t.Fatalf("observations=%+v passes=%d err=%v", observations, v.passes, err)
+	}
+}
+
+func strictHooklessLinuxProof(status string, statusUpdatedAt int64, stable bool) strictNativeThreadProof {
+	thread := "00000000-0000-4000-8000-000000000001"
+	return strictNativeThreadProof{Thread: thread, Claude: strictClaudeNativeProof{
+		Thread: thread, ProcessStartedAt: time.Unix(100100, 0).UTC(), CWD: "/project", Signature: "same", DurableStop: true,
+		NativeStatus: status, NativeStatusUpdatedAt: statusUpdatedAt, NativeStartedAt: 100100500, NativeStatusStable: stable,
+	}}
+}
+
+func TestStrictLinuxHooklessNativeIdleAdmission(t *testing.T) {
+	proof := strictHooklessLinuxProof("idle", 100101000, true)
+	v := strictVerifierFixture([]strictNativeThreadProof{proof, proof},
+		func(int, session.StrictSendIdleEvidence) session.StrictSendIdleDecision {
+			return session.StrictSendIdleDecision{Reason: "hook_unavailable"}
+		})
+	v.platform, v.architecture = "linux", "amd64"
+	observedTmux := 0
+	observations, err := runStrictAdmissionProbe(v, func() (tmux.StrictPaneIdentity, error) {
+		observedTmux++
+		return strictVerifiedPaneIdentity(), nil
+	})
+	if err != nil || !observations[0].IdleDecision.Admitted || !observations[1].IdleDecision.Admitted ||
+		observations[1].IdleDecision.Reason != "native_idle_without_hook" || observations[1].IdleDecision.DurableStop || observedTmux != 2 {
+		t.Fatalf("hookless native idle result=%+v err=%v", observations, err)
+	}
+}
+
+func TestStrictLinuxHooklessAdmissionRejectsMissingInvalidBusyAndWeakEvidence(t *testing.T) {
+	now := time.Now()
+	valid := strictHooklessLinuxProof("idle", 100101000, true).Claude
+	for _, tc := range []struct {
+		name, platform, architecture, tool, hookReason string
+		proof                                          strictClaudeNativeProof
+	}{
+		{"missing_status", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatus = ""; return p }()},
+		{"busy", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatus = "running"; return p }()},
+		{"unstable", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatusStable = false; return p }()},
+		{"missing_timestamp", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatusUpdatedAt = 0; return p }()},
+		{"before_start", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof {
+			p := valid
+			p.NativeStatusUpdatedAt = 100099000
+			return p
+		}()},
+		{"future", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof {
+			p := valid
+			p.NativeStatusUpdatedAt = now.Add(time.Minute).UnixMilli()
+			return p
+		}()},
+		{"weak", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.DurableStop = false; return p }()},
+		{"darwin", "darwin", "arm64", "claude", "hook_unavailable", valid},
+		{"wrong_arch", "linux", "arm64", "claude", "hook_unavailable", valid},
+		{"non_claude", "linux", "amd64", "codex", "hook_unavailable", valid},
+		{"invalid_hook_not_bypassed", "linux", "amd64", "claude", "hook_invalid", valid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strictLinuxNativeIdleAdmission(tc.platform, tc.architecture, tc.tool, tc.proof, now) && tc.hookReason != "hook_invalid" {
+				t.Fatal("unsafe hookless evidence admitted")
+			}
+			threadProof := strictNativeThreadProof{Thread: tc.proof.Thread, Claude: tc.proof}
+			v := strictVerifierFixture([]strictNativeThreadProof{threadProof},
+				func(int, session.StrictSendIdleEvidence) session.StrictSendIdleDecision {
+					return session.StrictSendIdleDecision{Reason: tc.hookReason}
+				})
+			v.inst.Tool = tc.tool
+			v.platform, v.architecture = tc.platform, tc.architecture
+			v.expected = tc.proof.Thread
+			if _, err := v.verify(strictVerifiedPaneIdentity()); err == nil {
+				t.Fatal("hookless refusal admitted by verifier")
+			}
+		})
+	}
+}
+
+func TestStrictLinuxHooklessAdmissionRejectsStatusTimestampAndAuthorityChange(t *testing.T) {
+	base := strictHooklessLinuxProof("idle", 100101000, true)
+	for _, mutation := range []string{"status", "timestamp", "authority"} {
+		t.Run(mutation, func(t *testing.T) {
+			second := base
+			if mutation == "status" {
+				second.Claude.NativeStatus = "running"
+			}
+			if mutation == "timestamp" {
+				second.Claude.NativeStatusUpdatedAt++
+			}
+			idleCalls := 0
+			v := strictVerifierFixture([]strictNativeThreadProof{base, second},
+				func(pass int, _ session.StrictSendIdleEvidence) session.StrictSendIdleDecision {
+					idleCalls++
+					if mutation == "authority" && pass == 2 {
+						return session.StrictSendIdleDecision{Admitted: true, Reason: "fresh_hook"}
+					}
+					return session.StrictSendIdleDecision{Reason: "hook_unavailable"}
+				})
+			v.platform, v.architecture = "linux", "amd64"
+			if _, err := runStrictAdmissionProbe(v, strictFixedProbeObservation(strictVerifiedPaneIdentity())); err == nil || idleCalls != 2 {
+				t.Fatalf("hookless %s change admitted: err=%v idle_calls=%d", mutation, err, idleCalls)
+			}
+		})
 	}
 }
 
@@ -244,7 +352,7 @@ func TestStrictAdmissionRejectsLegacyAtStaleSecondPass(t *testing.T) {
 			}
 			return session.StrictSendIdleDecision{Admitted: pass == 1, Reason: "stale_hook"}
 		})
-	if _, err := runStrictAdmissionProbe(v, tmux.StrictPaneIdentity{}); err == nil || v.passes != 2 {
+	if _, err := runStrictAdmissionProbe(v, strictFixedProbeObservation(strictVerifiedPaneIdentity())); err == nil || v.passes != 2 {
 		t.Fatalf("legacy fresh-to-stale accepted: passes=%d err=%v", v.passes, err)
 	}
 }
@@ -265,7 +373,7 @@ func TestStrictAdmissionRejectsStrongDowngradeAndSignatureChange(t *testing.T) {
 					idleCalls++
 					return session.StrictSendIdleDecision{Admitted: true, Reason: "fresh_hook"}
 				})
-			if _, err := runStrictAdmissionProbe(v, tmux.StrictPaneIdentity{}); err == nil || idleCalls != 1 {
+			if _, err := runStrictAdmissionProbe(v, strictFixedProbeObservation(strictVerifiedPaneIdentity())); err == nil || idleCalls != 1 {
 				t.Fatalf("identity change accepted: idle_calls=%d err=%v", idleCalls, err)
 			}
 		})
@@ -297,7 +405,7 @@ func TestStrictAdmissionBindsExpectedThreadOnBothPasses(t *testing.T) {
 						return session.StrictSendIdleDecision{Admitted: true, Reason: "fresh_hook"}
 					})
 				v.expected = expected
-				if _, err := runStrictAdmissionProbe(v, tmux.StrictPaneIdentity{}); err == nil {
+				if _, err := runStrictAdmissionProbe(v, strictFixedProbeObservation(strictVerifiedPaneIdentity())); err == nil {
 					t.Fatal("wrong expected thread accepted")
 				}
 				if want := wrongPass - 1; idleCalls != want {
@@ -338,7 +446,7 @@ func TestStrictAdmissionPreservesCodexProofContinuity(t *testing.T) {
 					},
 				},
 			}
-			_, err := runStrictAdmissionProbe(v, tmux.StrictPaneIdentity{})
+			_, err := runStrictAdmissionProbe(v, strictFixedProbeObservation(strictVerifiedPaneIdentity()))
 			if (err == nil) != tc.want {
 				t.Fatalf("accepted=%v err=%v", err == nil, err)
 			}
@@ -372,6 +480,48 @@ func TestStrictProbeArgumentsHaveNoMessageSurface(t *testing.T) {
 	}
 }
 
+func TestStrictProbeTargetRemainsClaudeOnlyOnDarwin(t *testing.T) {
+	if !strictProbeTargetSupported("darwin", "arm64", "claude") {
+		t.Fatal("Darwin Claude probe was disabled")
+	}
+	for _, tool := range []string{"codex", "shell", "gemini"} {
+		if strictProbeTargetSupported("darwin", "arm64", tool) {
+			t.Fatalf("Darwin %s row passed the Claude-only probe gate", tool)
+		}
+	}
+}
+
+func TestStrictTmux36BracketCompatibilityRequiresExactLinuxClaudeProof(t *testing.T) {
+	live := tmux.StrictPaneIdentity{ServerVersion: "3.6"}
+	if !strictBracketPasteAdmission("linux", "amd64", "claude", live, true) {
+		t.Fatal("exact Linux Claude tmux 3.6 compatibility rejected")
+	}
+	for _, tc := range []struct {
+		name, platform, architecture, tool, version, flag string
+		durable                                           bool
+	}{
+		{"wrong_version", "linux", "amd64", "claude", "3.5", "", true},
+		{"future_version", "linux", "amd64", "claude", "3.7", "", true},
+		{"non_claude", "linux", "amd64", "shell", "3.6", "", true},
+		{"linux_codex", "linux", "amd64", "codex", "3.6", "", true},
+		{"wrong_arch", "linux", "arm64", "claude", "3.6", "", true},
+		{"darwin", "darwin", "arm64", "claude", "3.6", "", true},
+		{"weak_native", "linux", "amd64", "claude", "3.6", "", false},
+		{"known_false", "linux", "amd64", "claude", "3.6", "0", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id := tmux.StrictPaneIdentity{ServerVersion: tc.version, BracketPaste: tc.flag}
+			if strictBracketPasteAdmission(tc.platform, tc.architecture, tc.tool, id, tc.durable) {
+				t.Fatal("unverified bracket compatibility admitted")
+			}
+		})
+	}
+	known := tmux.StrictPaneIdentity{ServerVersion: "3.7b", BracketPaste: "1"}
+	if !strictBracketPasteAdmission("darwin", "arm64", "codex", known, false) {
+		t.Fatal("known Darwin bracket-paste evidence regressed")
+	}
+}
+
 func TestStrictProbeDiagnosticsAreBoundedAndZeroTimeIsEmpty(t *testing.T) {
 	if strictProbeTime(time.Time{}) != "" {
 		t.Fatal("zero process start was exposed as a year-one timestamp")
@@ -395,7 +545,7 @@ func TestStrictProbeDiagnosticsAreBoundedAndZeroTimeIsEmpty(t *testing.T) {
 	v.deps.native = func(*session.Instance, *tmux.Session, tmux.StrictPaneIdentity) (strictNativeThreadProof, error) {
 		return strictNativeThreadProof{}, fmt.Errorf("native root changed")
 	}
-	if _, err := v.verify(tmux.StrictPaneIdentity{}); err == nil || err.Error() != "native_root_changed" {
+	if _, err := v.verify(strictVerifiedPaneIdentity()); err == nil || err.Error() != "native_root_changed" {
 		t.Fatalf("root churn diagnostic=%v", err)
 	}
 }
@@ -407,10 +557,10 @@ func TestStrictAdmissionRefusesThirdVerifierPass(t *testing.T) {
 		func(_ int, _ session.StrictSendIdleEvidence) session.StrictSendIdleDecision {
 			return session.StrictSendIdleDecision{Admitted: true, Reason: "fresh_hook"}
 		})
-	if _, err := runStrictAdmissionProbe(v, tmux.StrictPaneIdentity{}); err != nil {
+	if _, err := runStrictAdmissionProbe(v, strictFixedProbeObservation(strictVerifiedPaneIdentity())); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.verify(tmux.StrictPaneIdentity{}); err == nil {
+	if _, err := v.verify(strictVerifiedPaneIdentity()); err == nil {
 		t.Fatal("third verifier pass accepted")
 	}
 }

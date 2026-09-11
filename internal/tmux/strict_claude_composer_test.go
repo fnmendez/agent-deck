@@ -124,12 +124,72 @@ func TestStrictClaudeRecordedResizePreservesEmptyHintGuard(t *testing.T) {
 	}
 }
 
+func TestStrictClaude268MeasuredAgentsHint(t *testing.T) {
+	for _, footer := range []string{
+		"⏵⏵ bypass permissions on (shift+tab to cycle) · PR #978 · ← 2 agents",
+		"⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agents",
+		"⏵⏵ bypass permissions on (shift+tab to cycle) · PR #1 · ← 99 agents",
+		"\x1b[2m⏵⏵ bypass permissions on (shift+tab to cycle) · PR #978 · ← 2 agents\x1b[0m",
+	} {
+		t.Run(footer, func(t *testing.T) {
+			s := strictClaudeFixtureGeometry("❯\u00a0", footer, 200, 50, 46)
+			result, err, stages, drops, submits := strictClaudeFixtureAttempt(t,
+				func() strictSnapshot { return s }, func(StrictPaneIdentity) error { return nil })
+			if err != nil || !result.Attempted || result.Delivery != "unknown" || stages != 1 || drops != 1 || submits != 1 {
+				t.Fatalf("measured 2.1.268 hint refused: result=%+v err=%v stages=%d drops=%d submits=%d",
+					result, err, stages, drops, submits)
+			}
+		})
+	}
+}
+
+func TestStrictClaude268AgentsHintCounterexamplesHaveNoEffects(t *testing.T) {
+	valid := "⏵⏵ bypass permissions on (shift+tab to cycle) · PR #978 · ← 2 agents"
+	invalid := map[string]string{
+		"substring_prefix":  "status: " + valid,
+		"substring_suffix":  valid + " busy",
+		"zero_agents":       strings.Replace(valid, "2 agents", "0 agents", 1),
+		"leading_zero":      strings.Replace(valid, "2 agents", "02 agents", 1),
+		"huge_agents":       strings.Replace(valid, "2 agents", "100 agents", 1),
+		"negative_agents":   strings.Replace(valid, "2 agents", "-2 agents", 1),
+		"singular_agent":    strings.Replace(valid, "2 agents", "1 agent", 1),
+		"missing_agents":    strings.TrimSuffix(valid, " agents"),
+		"zero_pr":           strings.Replace(valid, "PR #978", "PR #0", 1),
+		"leading_zero_pr":   strings.Replace(valid, "PR #978", "PR #0978", 1),
+		"huge_pr":           strings.Replace(valid, "PR #978", "PR #1000000", 1),
+		"missing_pr_number": strings.Replace(valid, "PR #978", "PR #", 1),
+		"lowercase_pr":      strings.Replace(valid, "PR #978", "pr #978", 1),
+		"missing_separator": strings.Replace(valid, " · PR", " PR", 1),
+		"foreign_arrow":     strings.Replace(valid, "←", "<", 1),
+		"for_agents_suffix": strings.Replace(valid, "2 agents", "for agents", 1),
+	}
+	for name, footer := range invalid {
+		t.Run(name, func(t *testing.T) {
+			s := strictClaudeFixtureGeometry("❯\u00a0", footer, 200, 50, 46)
+			result, err, stages, drops, submits := strictClaudeFixtureAttempt(t,
+				func() strictSnapshot { return s }, func(StrictPaneIdentity) error { return nil })
+			if err == nil || result.Attempted || stages != 0 || drops != 0 || submits != 0 {
+				t.Fatalf("malformed 2.1.268 hint admitted: result=%+v err=%v stages=%d drops=%d submits=%d",
+					result, err, stages, drops, submits)
+			}
+		})
+	}
+	t.Run("draft", func(t *testing.T) {
+		s := strictClaudeFixtureGeometry("❯\u00a0operator draft", valid, 200, 50, 46)
+		result, err, stages, drops, submits := strictClaudeFixtureAttempt(t,
+			func() strictSnapshot { return s }, func(StrictPaneIdentity) error { return nil })
+		if err == nil || result.Attempted || stages != 0 || drops != 0 || submits != 0 {
+			t.Fatalf("draft with valid agents suffix admitted: result=%+v err=%v", result, err)
+		}
+	})
+}
+
 func TestStrictClaudeDirectorNBSPThroughCapture(t *testing.T) {
 	for _, cursorFlag := range []int{1, 0} {
 		t.Run(fmt.Sprintf("cursor_flag_%d", cursorFlag), func(t *testing.T) {
 			s := strictClaudeDirectorFixture("❯\u00a0", strictClaudeEmptyBypassHint)
 			stages, submits := 0, 0
-			metadata := fmt.Sprintf("$5|%%9|123|2|62|0|0|%d|0|0|141|67|1|claude|fixture|@2|/fixture|/dev/ttys015\n", cursorFlag)
+			metadata := fmt.Sprintf("$5|%%9|123|2|62|0|0|%d|0|0|141|67|1|claude|fixture|@2|/fixture|/dev/ttys015|3.7b\n", cursorFlag)
 			read := func(args ...string) ([]byte, error) {
 				switch args[0] {
 				case "display-message":

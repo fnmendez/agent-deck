@@ -23,40 +23,59 @@ const strictLinuxProcReadLimit = 64 * 1024
 const strictLinuxClaudeNodeVersion = "v24.18.0"
 
 var (
-	strictLinuxBootID       = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-	strictLinuxPIDNamespace = regexp.MustCompile(`^pid:\[[1-9][0-9]*\]$`)
+	strictLinuxMachineID        = regexp.MustCompile(`^[0-9a-f]{32}\n$`)
+	strictLinuxPIDNamespace     = regexp.MustCompile(`^pid:\[[1-9][0-9]*\]$`)
+	strictLinuxClaudeAtomicSlot = regexp.MustCompile(`^\.claude-code-[A-Za-z0-9]{8}$`)
 )
 
 type strictClaudeLinuxDeps struct {
-	procRoot     string
-	bind         func(string, int64, bool) (strictClaudeFileBinding, *os.File, []byte, error)
-	readBounded  func(string, int64) ([]byte, error)
-	readlink     func(string) (string, error)
-	open         func(string) (*os.File, error)
-	stat         func(string) (os.FileInfo, error)
-	packageProof func(string, string, int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error)
-	uid          int
+	procRoot       string
+	bind           func(string, int64, bool) (strictClaudeFileBinding, *os.File, []byte, error)
+	readBounded    func(string, int64) ([]byte, error)
+	readlink       func(string) (string, error)
+	open           func(string) (*os.File, error)
+	stat           func(string) (os.FileInfo, error)
+	machineIDPath  string
+	machineIDOwner int
+	packageProof   func(string, string, int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error)
+	uid            int
 }
 
 func strictClaudeLinuxDefaultDeps() strictClaudeLinuxDeps {
 	return strictClaudeLinuxDeps{
 		procRoot: "/proc", bind: strictClaudeOwnedBinding, readBounded: strictLinuxReadBounded,
-		readlink: os.Readlink, open: os.Open, stat: os.Stat, packageProof: strictClaudeLinuxPackageProof, uid: os.Getuid(),
+		readlink: os.Readlink, open: os.Open, stat: os.Stat, machineIDPath: "/etc/machine-id", machineIDOwner: 0,
+		packageProof: strictClaudeLinuxPackageProof, uid: os.Getuid(),
 	}
 }
 
 type strictClaudeLinuxProcess struct {
-	PID, PPID, PGID, SID, TPGID, TTY, Start, State, Executable string
-	UID, Device, Inode, Size                                   uint64
-	Mode                                                       uint32
-	StartedAt                                                  time.Time
+	PID, PPID, PGID, SID, TPGID, TTY, Start, State, Executable, ExecutableSHA, MachineID, MachineIDProof string
+	UID, Device, Inode, Size                                                                             uint64
+	Mode                                                                                                 uint32
+	StartedAt                                                                                            time.Time
 }
 
 func (p strictClaudeLinuxProcess) signature() string {
 	return strings.Join([]string{p.PID, p.PPID, p.PGID, p.SID, p.TPGID, p.TTY, p.Start,
 		strconv.FormatUint(p.UID, 10), p.Executable, fmt.Sprintf("%x", p.Device),
 		strconv.FormatUint(p.Inode, 10), strconv.FormatUint(p.Size, 10), fmt.Sprintf("%o", p.Mode),
-		p.StartedAt.Format(time.RFC3339Nano)}, ",")
+		p.StartedAt.Format(time.RFC3339Nano), p.ExecutableSHA, p.MachineID, p.MachineIDProof}, ",")
+}
+
+type strictClaudeLinuxProcessHandles struct {
+	executable, machineID *os.File
+}
+
+func (h *strictClaudeLinuxProcessHandles) Close() {
+	if h == nil {
+		return
+	}
+	for _, file := range []*os.File{h.executable, h.machineID} {
+		if file != nil {
+			file.Close()
+		}
+	}
 }
 
 func strictClaudeLinuxThreadProof(inst *session.Instance, target *tmux.Session, id tmux.StrictPaneIdentity, home string) (strictClaudeNativeProof, error) {
@@ -108,7 +127,7 @@ func strictClaudeLinuxThreadProofWithDeps(inst *session.Instance, target *tmux.S
 		return strictClaudeNativeProof{}, fmt.Errorf("native package unavailable: %w", err)
 	}
 	defer heldPackage.Close()
-	before, heldExecutable, err := strictClaudeLinuxProcessProof(record, id, firstPackage, deps)
+	before, heldExecutable, err := strictClaudeLinuxProcessProof(record, id, home, firstPackage, deps)
 	if err != nil {
 		return strictClaudeNativeProof{}, fmt.Errorf("native session identity mismatch: %w", err)
 	}
@@ -148,7 +167,7 @@ func strictClaudeLinuxThreadProofWithDeps(inst *session.Instance, target *tmux.S
 		return strictClaudeNativeProof{}, fmt.Errorf("native root changed")
 	}
 	defer heldRootAgain.Close()
-	after, heldExecutableAgain, err := strictClaudeLinuxProcessProof(secondDecoded, id, secondPackage, deps)
+	after, heldExecutableAgain, err := strictClaudeLinuxProcessProof(secondDecoded, id, home, secondPackage, deps)
 	if err != nil {
 		return strictClaudeNativeProof{}, fmt.Errorf("native process changed")
 	}
@@ -157,10 +176,12 @@ func strictClaudeLinuxThreadProofWithDeps(inst *session.Instance, target *tmux.S
 		return strictClaudeNativeProof{}, fmt.Errorf("native process changed")
 	}
 	signature := strings.Join([]string{inst.ID, target.SocketName, target.Name, id.SessionID, id.WindowID,
-		id.PaneID, record.SessionID, record.CWD, before.signature(), firstRecordSignature,
+		id.PaneID, id.ServerVersion, id.BracketPaste, record.SessionID, record.CWD, before.signature(), firstRecordSignature,
 		firstPackage.signature(), firstRoot.signature()}, "|")
 	return strictClaudeNativeProof{Thread: record.SessionID, ProcessStartedAt: before.StartedAt,
-		CWD: record.CWD, Signature: signature, DurableStop: true}, nil
+		CWD: record.CWD, Signature: signature, DurableStop: true, NativeStatus: secondDecoded.Status,
+		NativeStatusUpdatedAt: secondDecoded.StatusUpdatedAt, NativeStartedAt: secondDecoded.StartedAt,
+		NativeStatusStable: record.Status == secondDecoded.Status && record.StatusUpdatedAt == secondDecoded.StatusUpdatedAt}, nil
 }
 
 func strictLinuxReadBounded(path string, limit int64) ([]byte, error) {
@@ -440,87 +461,183 @@ func strictClaudeLinuxPackageMetadata(data []byte) (string, string, error) {
 	return name, version, nil
 }
 
-func strictClaudeLinuxProcessProof(record strictClaudeRecord, id tmux.StrictPaneIdentity, pkg strictClaudeLinuxPackage,
-	deps strictClaudeLinuxDeps) (strictClaudeLinuxProcess, *os.File, error) {
+func strictLinuxMachineIDProof(path string, owner int) (strictClaudeFileBinding, *os.File, []byte, error) {
+	file, ancestors, err := strictOpenVerifiedPath(path)
+	if err != nil {
+		return strictClaudeFileBinding{}, nil, nil, err
+	}
+	fail := func(reason string) (strictClaudeFileBinding, *os.File, []byte, error) {
+		file.Close()
+		return strictClaudeFileBinding{}, nil, nil, fmt.Errorf("%s", reason)
+	}
+	before, err := file.Stat()
+	if err != nil {
+		return fail("machine identity stat unavailable")
+	}
+	underlying, ok := before.Sys().(*syscall.Stat_t)
+	if !ok || !before.Mode().IsRegular() || before.Mode().Perm() != 0444 || before.Size() != 33 ||
+		int(underlying.Uid) != owner || underlying.Nlink != 1 {
+		return fail("unsafe machine identity")
+	}
+	data, err := io.ReadAll(io.LimitReader(file, 34))
+	if err != nil || int64(len(data)) != before.Size() || !strictLinuxMachineID.Match(data) {
+		return fail("invalid machine identity")
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return fail("machine identity changed")
+	}
+	afterStat, afterOK := after.Sys().(*syscall.Stat_t)
+	if !afterOK || before.Mode() != after.Mode() || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) ||
+		underlying.Uid != afterStat.Uid || underlying.Nlink != afterStat.Nlink {
+		return fail("machine identity changed")
+	}
+	device, inode, err := strictFileIdentity(file)
+	if err != nil {
+		return fail("machine identity file unavailable")
+	}
+	return strictClaudeFileBinding{Path: path, Ancestors: ancestors, ContentSHA: fmt.Sprintf("%x", sha256.Sum256(data)),
+		Device: device, Inode: inode, Nlink: uint64(afterStat.Nlink), Size: after.Size(), ModTime: after.ModTime().UnixNano(),
+		Mode: uint32(after.Mode().Perm())}, file, data, nil
+}
+
+func strictClaudeLinuxProcessProof(record strictClaudeRecord, id tmux.StrictPaneIdentity, home string, pkg strictClaudeLinuxPackage,
+	deps strictClaudeLinuxDeps) (strictClaudeLinuxProcess, *strictClaudeLinuxProcessHandles, error) {
+	handles := &strictClaudeLinuxProcessHandles{}
+	fail := func(reason string) (strictClaudeLinuxProcess, *strictClaudeLinuxProcessHandles, error) {
+		handles.Close()
+		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("%s", reason)
+	}
 	processRoot := filepath.Join(deps.procRoot, id.PID)
 	statData, err := deps.readBounded(filepath.Join(processRoot, "stat"), strictLinuxProcReadLimit)
 	if err != nil {
-		return strictClaudeLinuxProcess{}, nil, err
+		return fail("process stat unavailable")
 	}
 	process, err := strictParseLinuxProcessStat(string(statData), id.PID)
 	if err != nil || process.PGID != id.PID || process.SID != id.PID || process.TPGID != id.PID ||
-		process.Start != record.ProcStart || strings.ContainsAny(process.State, "TXZ") {
-		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("foreground process unverified")
+		process.Start != record.ProcStart || !strictLinuxProcessStateAllowed(process.State) {
+		return fail("foreground process unverified")
 	}
 	statusData, err := deps.readBounded(filepath.Join(processRoot, "status"), strictLinuxProcReadLimit)
 	if err != nil || !strictMatchLinuxProcessStatus(string(statusData), process, deps.uid) {
-		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("process ownership unverified")
+		return fail("process ownership unverified")
 	}
 	tty, err := deps.readlink(filepath.Join(processRoot, "fd", "0"))
 	if err != nil || tty != id.TTY || !filepath.IsAbs(tty) || filepath.Clean(tty) != tty {
-		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("process tty unverified")
+		return fail("process tty unverified")
 	}
 	ttyInfo, err := deps.stat(tty)
 	if err != nil {
-		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("process tty unavailable")
+		return fail("process tty unavailable")
 	}
 	ttyStat, ok := ttyInfo.Sys().(*syscall.Stat_t)
 	if !ok || strconv.FormatUint(uint64(ttyStat.Rdev), 10) != process.TTY {
-		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("process tty changed")
+		return fail("process tty changed")
 	}
 	cwd, err := deps.readlink(filepath.Join(processRoot, "cwd"))
 	if err != nil || cwd != record.CWD || cwd != id.CWD {
-		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("process cwd changed")
+		return fail("process cwd changed")
 	}
-	bootData, err := deps.readBounded(filepath.Join(deps.procRoot, "sys", "kernel", "random", "boot_id"), 128)
 	procStatData, procStatErr := deps.readBounded(filepath.Join(deps.procRoot, "stat"), 1024*1024)
 	pidNamespace, namespaceErr := deps.readlink(filepath.Join(processRoot, "ns", "pid"))
-	boot := strings.TrimSpace(string(bootData))
 	bootTime, bootTimeErr := strictLinuxBootTime(string(procStatData))
 	startTicks, startTicksErr := strconv.ParseInt(process.Start, 10, 64)
 	processStart := bootTime.Add(time.Duration(startTicks) * time.Second / 100)
 	recordStart := time.UnixMilli(record.StartedAt).UTC()
 	recordDelay := recordStart.Sub(processStart)
-	if err != nil || procStatErr != nil || namespaceErr != nil || bootTimeErr != nil || startTicksErr != nil || startTicks <= 0 ||
+	if procStatErr != nil || namespaceErr != nil || bootTimeErr != nil || startTicksErr != nil || startTicks <= 0 ||
 		record.StartedAt <= 0 || recordDelay < 0 || recordDelay > 2*time.Second ||
-		!strictLinuxBootID.MatchString(boot) || !strictLinuxPIDNamespace.MatchString(pidNamespace) ||
-		record.PIDDomain != "linux:"+boot+":"+pidNamespace {
-		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("process domain unverified")
+		!strictLinuxPIDNamespace.MatchString(pidNamespace) {
+		return fail("process domain unverified")
+	}
+	machineBinding, machineFile, machineData, err := strictLinuxMachineIDProof(deps.machineIDPath, deps.machineIDOwner)
+	if err != nil {
+		return fail("machine identity unavailable")
+	}
+	handles.machineID = machineFile
+	machineID := strings.TrimSuffix(string(machineData), "\n")
+	if record.PIDDomain != "linux:"+machineID+":"+pidNamespace {
+		return fail("process domain unverified")
 	}
 	process.StartedAt = processStart.UTC()
+	process.MachineID, process.MachineIDProof = machineID, machineBinding.signature()
 	executableLink := filepath.Join(processRoot, "exe")
 	executable, err := deps.readlink(executableLink)
-	if err != nil || executable != pkg.Executable.Path {
-		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("process executable unverified")
+	stableExecutable := executable == pkg.Executable.Path
+	atomicResidue := strictLinuxClaudeAtomicResidue(executable, home)
+	if err != nil || !stableExecutable && !atomicResidue {
+		return fail("process executable unverified")
 	}
 	held, err := deps.open(executableLink)
 	if err != nil {
-		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("process executable unavailable")
+		return fail("process executable unavailable")
 	}
-	fail := func(reason string) (strictClaudeLinuxProcess, *os.File, error) {
-		held.Close()
-		return strictClaudeLinuxProcess{}, nil, fmt.Errorf("%s", reason)
-	}
+	handles.executable = held
 	info, err := held.Stat()
 	if err != nil {
 		return fail("process executable stat unavailable")
 	}
 	underlying, ok := info.Sys().(*syscall.Stat_t)
+	expectedLinks := pkg.Executable.Nlink
+	if atomicResidue {
+		expectedLinks = 0
+	}
 	if !ok || !info.Mode().IsRegular() || info.Size() != pkg.Executable.Size || info.Mode().Perm() != os.FileMode(pkg.Executable.Mode) ||
-		int(underlying.Uid) != deps.uid || uint64(underlying.Nlink) != pkg.Executable.Nlink {
+		int(underlying.Uid) != deps.uid || uint64(underlying.Nlink) != expectedLinks {
 		return fail("unsafe process executable")
 	}
 	device, inode, err := strictFileIdentity(held)
-	if err != nil || device != pkg.Executable.Device || inode != pkg.Executable.Inode {
+	if err != nil || device != pkg.Executable.Device || stableExecutable && inode != pkg.Executable.Inode ||
+		atomicResidue && (inode == 0 || inode == pkg.Executable.Inode) {
 		return fail("process executable identity unavailable")
+	}
+	executableSHA := pkg.Executable.ContentSHA
+	if atomicResidue {
+		hash := sha256.New()
+		count, hashErr := io.Copy(hash, io.LimitReader(held, pkg.Executable.Size+1))
+		executableSHA = fmt.Sprintf("%x", hash.Sum(nil))
+		after, statErr := held.Stat()
+		if hashErr != nil || count != pkg.Executable.Size || executableSHA != pkg.Executable.ContentSHA || statErr != nil {
+			return fail("atomic-update executable changed or differs")
+		}
+		afterUnderlying, afterOK := after.Sys().(*syscall.Stat_t)
+		afterDevice, afterInode, identityErr := strictFileIdentity(held)
+		if !afterOK || after.Mode() != info.Mode() || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) ||
+			afterUnderlying.Uid != underlying.Uid || afterUnderlying.Nlink != underlying.Nlink ||
+			afterDevice != device || afterInode != inode || identityErr != nil {
+			return fail("atomic-update executable changed or differs")
+		}
 	}
 	executableAgain, err := deps.readlink(executableLink)
 	if err != nil || executableAgain != executable {
 		return fail("process executable changed")
 	}
-	process.Executable, process.UID, process.Device, process.Inode = executable, uint64(deps.uid), device, inode // #nosec G115 -- uid equality with the kernel stat value above proves a valid non-negative OS uid.
-	process.Size, process.Mode = uint64(info.Size()), uint32(info.Mode().Perm())                                 // #nosec G115 -- the held descriptor is a regular file with the exact non-negative package size proved above.
-	return process, held, nil
+	process.Executable, process.ExecutableSHA = executable, executableSHA
+	process.UID, process.Device, process.Inode = uint64(deps.uid), device, inode // #nosec G115 -- uid equality with the kernel stat value above proves a valid non-negative OS uid.
+	process.Size, process.Mode = uint64(info.Size()), uint32(info.Mode().Perm()) // #nosec G115 -- the held descriptor is a regular file with the exact non-negative package size proved above.
+	return process, handles, nil
+}
+
+func strictLinuxClaudeAtomicResidue(value, home string) bool {
+	const deletedSuffix = " (deleted)"
+	if !strings.HasSuffix(value, deletedSuffix) {
+		return false
+	}
+	path := strings.TrimSuffix(value, deletedSuffix)
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return false
+	}
+	parent := filepath.Dir(strictClaudeLinuxPackagePath(home))
+	relative, err := filepath.Rel(parent, path)
+	if err != nil || relative == "." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return false
+	}
+	parts := strings.Split(filepath.ToSlash(relative), "/")
+	return len(parts) == 3 && strictLinuxClaudeAtomicSlot.MatchString(parts[0]) && parts[1] == "bin" && parts[2] == "claude.exe"
+}
+
+func strictLinuxProcessStateAllowed(state string) bool {
+	return state == "R" || state == "S" || state == "D" || state == "I"
 }
 
 func strictParseLinuxProcessStat(value, expectedPID string) (strictClaudeLinuxProcess, error) {
