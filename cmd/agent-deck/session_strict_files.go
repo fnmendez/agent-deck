@@ -56,6 +56,47 @@ func strictOpenVerifiedPath(path string) (*os.File, string, error) {
 	}
 	return file, strings.Join(ancestors, "/"), nil
 }
+
+// strictOpenVerifiedDirectory is the directory-leaf counterpart to
+// strictOpenVerifiedPath. Every component, including the leaf, is opened
+// relative to a held parent with O_NOFOLLOW.
+func strictOpenVerifiedDirectory(path string) (*os.File, string, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, "", fmt.Errorf("noncanonical directory path")
+	}
+	components := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, "", err
+	}
+	ancestors := []string{}
+	for _, component := range components {
+		var st unix.Stat_t
+		if err := unix.Fstat(fd, &st); err != nil {
+			_ = unix.Close(fd)
+			return nil, "", err
+		}
+		device, err := strconv.ParseUint(fmt.Sprint(st.Dev), 10, 64)
+		if err != nil {
+			_ = unix.Close(fd)
+			return nil, "", fmt.Errorf("unsupported directory device identity")
+		}
+		ancestors = append(ancestors, fmt.Sprintf("%x:%d", device, st.Ino))
+		next, err := unix.Openat(fd, component, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		_ = unix.Close(fd)
+		if err != nil {
+			return nil, "", err
+		}
+		fd = next
+	}
+	file := os.NewFile(uintptr(fd), path)
+	info, err := file.Stat()
+	if err != nil || !info.IsDir() {
+		file.Close()
+		return nil, "", fmt.Errorf("non-directory native path")
+	}
+	return file, strings.Join(ancestors, "/"), nil
+}
 func strictFileIdentity(file *os.File) (uint64, uint64, error) {
 	var stat unix.Stat_t
 	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {

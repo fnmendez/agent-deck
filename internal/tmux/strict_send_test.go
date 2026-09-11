@@ -51,6 +51,75 @@ func TestStrictComposerRefusesUnknownDraftModalAndCursor(t *testing.T) {
 	}
 }
 
+func TestStrictLinuxClaudeComposerRefusesDraftModalAndBusyBeforeEffects(t *testing.T) {
+	for _, fault := range []string{"draft", "modal", "busy"} {
+		t.Run(fault, func(t *testing.T) {
+			snapshot := strictTestPane("claude")
+			switch fault {
+			case "draft":
+				snapshot.content = strings.Replace(snapshot.content, "❯ ", "❯ operator draft", 1)
+			case "modal":
+				snapshot.content += "Enter to confirm\n"
+			case "busy":
+				snapshot.content += "esc to interrupt\n"
+			}
+			stages, submits := 0, 0
+			result, err := strictSendOnce("claude", "fixture", func(StrictPaneIdentity) error { return nil }, strictOps{
+				snapshot: func(string) (strictSnapshot, error) { return snapshot, nil },
+				stage:    func(string) (string, error) { stages++; return "fixture", nil },
+				submit:   func(string, string) error { submits++; return nil },
+			})
+			if err == nil || result.Attempted || stages != 0 || submits != 0 {
+				t.Fatalf("Linux %s fixture reached an effect: %+v stages=%d submits=%d", fault, result, stages, submits)
+			}
+		})
+	}
+}
+
+func TestStrictLinuxNativeRefusalVocabularyHasNoTerminalEffect(t *testing.T) {
+	// The cmd package discriminates each native fault. This transport-level
+	// composition test pins the effect boundary for every fault at both verifier
+	// positions: the second position may stage private server memory, but it may
+	// never paste or submit terminal input.
+	faults := []string{
+		"missing_process", "process_churn", "wrong_start", "wrong_wall_start", "pid_reuse",
+		"wrong_pgid", "wrong_sid", "background", "stopped", "zombie", "wrong_uid", "wrong_executable",
+		"wrong_instance", "wrong_socket", "wrong_session", "wrong_pane", "wrong_thread", "wrong_cwd",
+		"wrong_tty", "wrong_domain", "unsafe_record", "duplicate_record", "unsafe_record_path", "record_churn",
+		"missing_root", "duplicate_root", "root_churn", "package_path", "package_owner", "package_mode", "package_link",
+		"manifest_path", "manifest_owner", "manifest_mode", "manifest_link", "manifest_content", "manifest_churn", "package_version",
+		"executable_path", "executable_owner", "executable_mode", "executable_link", "executable_content", "final_record_mutation",
+		"final_record_path", "final_record_mode", "final_record_link", "final_root_mutation", "final_manifest_mutation",
+		"final_executable_mutation", "final_executable_link", "final_package_mode", "final_package_content",
+	}
+	for _, fault := range faults {
+		for _, refusalPass := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/pass_%d", fault, refusalPass), func(t *testing.T) {
+				verifies, stages, drops, submits := 0, 0, 0, 0
+				snapshot := strictTestPane("claude")
+				result, err := strictSendOnce("claude", "fixture", func(StrictPaneIdentity) error {
+					verifies++
+					if verifies == refusalPass {
+						return errors.New(fault)
+					}
+					return nil
+				}, strictOps{
+					snapshot: func(string) (strictSnapshot, error) { snapshot.observedAt = time.Now(); return snapshot, nil },
+					stage:    func(string) (string, error) { stages++; return "private-fixture", nil },
+					drop:     func(string) { drops++ },
+					submit:   func(string, string) error { submits++; return nil },
+				})
+				wantStages := refusalPass - 1
+				if err == nil || result.Attempted || result.Delivery != "refused" || submits != 0 ||
+					stages != wantStages || drops != wantStages {
+					t.Fatalf("native refusal crossed effect boundary: result=%+v err=%v stages=%d drops=%d submits=%d",
+						result, err, stages, drops, submits)
+				}
+			})
+		}
+	}
+}
+
 func TestStrictOnceRefusalsAndAmbiguityNeverRetry(t *testing.T) {
 	for _, tc := range []struct {
 		name                    string

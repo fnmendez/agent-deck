@@ -73,10 +73,13 @@ type strictSessionAdmissionVerifier struct {
 
 func strictNativeThread(inst *session.Instance, target *tmux.Session, id tmux.StrictPaneIdentity) (strictNativeThreadProof, error) {
 	if inst.Tool == "codex" {
+		if !strictCodexPlatformSupported(runtime.GOOS) {
+			return strictNativeThreadProof{}, fmt.Errorf("unsupported strict Codex platform")
+		}
 		thread, err := target.StrictThreadEnvironment(id)
 		return strictNativeThreadProof{Thread: thread}, err
 	}
-	proof, err := strictClaudeThreadProof(inst, id)
+	proof, err := strictClaudeThreadProof(inst, target, id)
 	return strictNativeThreadProof{Thread: proof.Thread, Claude: proof}, err
 }
 
@@ -170,11 +173,11 @@ func handleStrictSessionSend(out *CLIOutput, inst *session.Instance, expectedThr
 	result := tmux.StrictSendResult{Delivery: "refused", Reason: "target_unavailable"}
 	var sendErr error = fmt.Errorf("strict target unavailable")
 	target := inst.GetTmuxSession()
-	if !strictPlatformSupported(runtime.GOOS) {
+	if !strictToolPlatformSupported(runtime.GOOS, runtime.GOARCH, inst.Tool) {
 		result.Reason = "unsupported_platform"
-		sendErr = fmt.Errorf("strict send currently supports Darwin only")
+		sendErr = fmt.Errorf("strict send is unsupported on this platform")
 	}
-	if strictPlatformSupported(runtime.GOOS) && target != nil && strictThreadUUID.MatchString(expectedThread) && (inst.Tool == "claude" || inst.Tool == "codex") {
+	if strictToolPlatformSupported(runtime.GOOS, runtime.GOARCH, inst.Tool) && target != nil && strictThreadUUID.MatchString(expectedThread) {
 		verifier := newStrictSessionAdmissionVerifier(inst, target, expectedThread)
 		result, sendErr = target.StrictSendOnce(inst.Tool, message, verifier.callback)
 	}
@@ -273,7 +276,7 @@ func handleStrictSessionProbe(profile string, args []string) {
 		out.Error(err.Error(), ErrCodeNotFound)
 		os.Exit(1)
 	}
-	if inst.Tool != "claude" || inst.IsSSH() || !strictPlatformSupported(runtime.GOOS) || !inst.Exists() {
+	if !strictToolPlatformSupported(runtime.GOOS, runtime.GOARCH, inst.Tool) || inst.IsSSH() || !inst.Exists() {
 		out.Error("strict probe requires one exact live local Claude session ID", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
@@ -319,10 +322,13 @@ func handleStrictSessionProbe(profile string, args []string) {
 	out.Success("Strict admission probe passed without terminal effects", data)
 }
 
-func strictClaudeThreadProof(inst *session.Instance, id tmux.StrictPaneIdentity) (strictClaudeNativeProof, error) {
+func strictClaudeThreadProof(inst *session.Instance, target *tmux.Session, id tmux.StrictPaneIdentity) (strictClaudeNativeProof, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return strictClaudeNativeProof{}, fmt.Errorf("native home unavailable")
+	}
+	if runtime.GOOS == "linux" {
+		return strictClaudeLinuxThreadProof(inst, target, id, home)
 	}
 	return strictClaudeThreadProofWithRun(session.GetClaudeConfigDirForInstance(inst), inst.ProjectPath,
 		id, runtime.GOOS, home, strictNativeProbe)
@@ -412,13 +418,25 @@ func strictClaudeThreadProofWithDeps(configDir, project string, id tmux.StrictPa
 }
 
 type strictClaudeRecord struct {
-	PID       int    `json:"pid"`
-	SessionID string `json:"sessionId"`
-	CWD       string `json:"cwd"`
-	Tmux      string `json:"tmux"`
-	ProcStart string `json:"procStart"`
-	PIDDomain string `json:"pidDomain"`
-	Version   string `json:"version"`
+	PID                 int      `json:"pid"`
+	SessionID           string   `json:"sessionId"`
+	CWD                 string   `json:"cwd"`
+	Tmux                string   `json:"tmux"`
+	ProcStart           string   `json:"procStart"`
+	PIDDomain           string   `json:"pidDomain"`
+	Version             string   `json:"version"`
+	Entrypoint          string   `json:"entrypoint"`
+	Kind                string   `json:"kind"`
+	MessagingSocketPath string   `json:"messagingSocketPath"`
+	Name                string   `json:"name"`
+	NameSince           int64    `json:"nameSince"`
+	NameSource          string   `json:"nameSource"`
+	PeerFeatures        []string `json:"peerFeatures"`
+	PeerProtocol        int64    `json:"peerProtocol"`
+	StartedAt           int64    `json:"startedAt"`
+	Status              string   `json:"status"`
+	StatusUpdatedAt     int64    `json:"statusUpdatedAt"`
+	UpdatedAt           int64    `json:"updatedAt"`
 }
 
 var strictClaudeNativeVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
@@ -431,14 +449,14 @@ type strictClaudeRuntimeProof struct {
 
 type strictClaudeFileBinding struct {
 	Path, Ancestors, ContentSHA string
-	Device, Inode               uint64
+	Device, Inode, Nlink        uint64
 	Size, ModTime               int64
 	Mode                        uint32
 }
 
 func (b strictClaudeFileBinding) signature() string {
-	return fmt.Sprintf("%s:%s:%x:%d:%d:%d:%o:%s", b.Path, b.Ancestors, b.Device,
-		b.Inode, b.Size, b.ModTime, b.Mode, b.ContentSHA)
+	return fmt.Sprintf("%s:%s:%x:%d:%d:%d:%d:%o:%s", b.Path, b.Ancestors, b.Device,
+		b.Inode, b.Nlink, b.Size, b.ModTime, b.Mode, b.ContentSHA)
 }
 
 func strictClaudeOwnedBinding(path string, maxSize int64, readContent bool) (strictClaudeFileBinding, *os.File, []byte, error) {
@@ -473,11 +491,16 @@ func strictClaudeOwnedBinding(path string, maxSize int64, readContent bool) (str
 		contentSHA = fmt.Sprintf("%x", sha256.Sum256(data))
 	}
 	after, err := file.Stat()
-	if err != nil || before.Mode() != after.Mode() || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) {
+	if err != nil {
+		return fail("native file changed")
+	}
+	afterUnderlying, afterOK := after.Sys().(*syscall.Stat_t)
+	if !afterOK || before.Mode() != after.Mode() || before.Size() != after.Size() || !before.ModTime().Equal(after.ModTime()) ||
+		underlying.Uid != afterUnderlying.Uid || underlying.Nlink != afterUnderlying.Nlink {
 		return fail("native file changed")
 	}
 	return strictClaudeFileBinding{Path: path, Ancestors: ancestors, ContentSHA: contentSHA,
-		Device: device, Inode: inode, Size: after.Size(), ModTime: after.ModTime().UnixNano(),
+		Device: device, Inode: inode, Nlink: uint64(afterUnderlying.Nlink), Size: after.Size(), ModTime: after.ModTime().UnixNano(),
 		Mode: uint32(after.Mode().Perm())}, file, data, nil
 }
 
