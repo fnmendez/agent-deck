@@ -1,0 +1,12 @@
+{
+  "source_version": "2.1.263",
+  "source": "live idle Claude pane on macOS, tmux 3.7b capture-pane -p -e, read-only; only the prompt and hint rows are recorded",
+  "source_rule": "Claude Code 2.1.263, 2.1.268 and 2.1.269 add one contextual notification with segments [\"new task? \", \"/clear\", \" to save \", \"<tokens> tokens\"] after CLAUDE_CODE_IDLE_THRESHOLD_MINUTES (default 75) idle minutes when the context holds at least CLAUDE_CODE_IDLE_TOKEN_THRESHOLD (default 1e5) tokens. <tokens> is Intl en-US compact with one fraction digit at >= 1000, lowercased, with the first \".0\" removed.",
+  "note": "Geometry and both rows are recordings. Tests reconstruct the other rows with synthetic dividers/status and synthetic native identity; this is not a live send.",
+  "width": 188,
+  "height": 67,
+  "cursor_x": 2,
+  "cursor_y": 62,
+  "raw_prompt": "\u001b[39m\u276f\u00a0",
+  "raw_footer": "  \u001b[38;5;211m\u23f5\u23f5\u001b[39m \u001b[38;5;211mbypass\u001b[39m \u001b[38;5;211mpermissions\u001b[39m \u001b[38;5;211mon\u001b[38;5;246m (shift+tab\u001b[39m \u001b[38;5;246mto\u001b[39m \u001b[38;5;246mcycle)\u001b[39m \u001b[38;5;246m\u00b7\u001b[39m \u001b[38;5;246m\u2190\u001b[39m \u001b[38;5;246mfor\u001b[39m \u001b[38;5;246magents\u001b[39m                                                                                      \u001b[38;5;246mnew task? \u001b[38;5;153m/clear\u001b[38;5;246m to save \u001b[38;5;153m546.6k tokens\u001b[39m"
+}
