@@ -66,12 +66,17 @@ func strictNativeCommand(ctx context.Context, name string, args ...string) (*exe
 	return cmd, nil
 }
 
-// The initial release deliberately supports the measured Darwin native
-// process/session formats only. Other platforms must refuse explicitly.
-func strictPlatformSupported(platform string) bool { return platform == "darwin" }
+func strictCodexPlatformSupported(platform string) bool { return platform == "darwin" }
+
+// Strict entrypoints are available only where a tool-specific native proof is
+// implemented. Linux is Claude-only and amd64-only; Codex retains Darwin.
+func strictToolPlatformSupported(platform, architecture, tool string) bool {
+	return tool == "claude" && (platform == "darwin" || platform == "linux" && architecture == "amd64") ||
+		tool == "codex" && strictCodexPlatformSupported(platform)
+}
 
 func strictCodexRuntimeProof(id tmux.StrictPaneIdentity, expected, project string) (string, error) {
-	if !strictPlatformSupported(runtime.GOOS) {
+	if !strictCodexPlatformSupported(runtime.GOOS) {
 		return "", fmt.Errorf("unsupported strict platform")
 	}
 	return strictCodexProofWithRun(id, expected, project, strictNativeProbe)

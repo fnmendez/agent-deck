@@ -239,12 +239,13 @@ func TestStrictNativeProbeNormalizesTimezone(t *testing.T) {
 	if _, err := strictNativeCommand(context.Background(), "sh", "-c", "true"); err == nil {
 		t.Fatal("shell probe accepted")
 	}
-	for _, platform := range []string{"linux", "windows", "freebsd"} {
-		if strictPlatformSupported(platform) {
-			t.Fatalf("unsupported platform %s admitted", platform)
-		}
+	if !strictCodexPlatformSupported("darwin") || strictCodexPlatformSupported("linux") {
+		t.Fatal("Codex platform boundary changed")
 	}
-	if !strictPlatformSupported("darwin") {
-		t.Fatal("Darwin unsupported")
+	if !strictToolPlatformSupported("darwin", "amd64", "claude") || !strictToolPlatformSupported("darwin", "arm64", "codex") ||
+		!strictToolPlatformSupported("linux", "amd64", "claude") || strictToolPlatformSupported("linux", "arm64", "claude") ||
+		strictToolPlatformSupported("linux", "amd64", "codex") || strictToolPlatformSupported("freebsd", "amd64", "claude") ||
+		strictToolPlatformSupported("darwin", "amd64", "shell") {
+		t.Fatal("tool-specific strict platform boundary changed")
 	}
 }
