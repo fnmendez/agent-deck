@@ -74,6 +74,39 @@ func strictClaudeUpperDivider(line string, width int) bool {
 	return true
 }
 
+// Claude 2.1.261, 2.1.263, 2.1.265, 2.1.268 and 2.1.269 (every installed build)
+// end each completed turn with one transcript row from the same template: the
+// ✻ glyph, a fixed past-tense verb, " for ", the optionless duration formatter
+// output (0s-59s, Nm Ns, Nh Nm Ns or Nd Nh Nm, no leading zeros) and, when the
+// completion time is known, " · done " plus the same-day en-US h:mm AM/PM.
+// Pending background agents, running shells or monitors, budget and hidden
+// message text, other locales and day-relative times change the row and stay
+// unrecognized.
+var strictClaudeCompletedTurnRow = regexp.MustCompile(`^✻ (?:Baked|Brewed|Churned|Cogitated|Cooked|Crunched|Saut\x{e9}ed|Worked) for ` +
+	`(?:[1-5]?[0-9]s|(?:[1-9]|[1-5][0-9])m [1-5]?[0-9]s|(?:[1-9]|1[0-9]|2[0-3])h [1-5]?[0-9]m [1-5]?[0-9]s|[1-9][0-9]{0,2}d (?:1?[0-9]|2[0-3])h [1-5]?[0-9]m)` +
+	`(?: · done (?:[1-9]|1[0-2]):[0-5][0-9] [AP]M)?$`)
+
+// Only semicolon SGR is stripped; OSC 8 hyperlinks, colon SGR and every other
+// escape leave the row unrecognized.
+var strictSGRSequence = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// strictClaudeLiveRegionStart returns the first row that can still hold a live
+// menu, approval or interrupt hint above the empty bypass composer. Claude's
+// spinner, todos, queued input, notification-area notices and dialogs render
+// below all transcript, so when the only row between the upper divider and the
+// transcript is blank and the last transcript row is a completed turn, quoted
+// menus above it are not evidence. Transcript rows can still update in place
+// (the usage-limit countdown, the turn row's running-task suffix); the caller
+// keeps cancel hints whole-pane. Every other layout scans the whole pane.
+func strictClaudeLiveRegionStart(s strictSnapshot, rawLines, lines []string) int {
+	turn := s.y - 3
+	if turn < 0 || s.y >= len(lines) || len(rawLines) != len(lines) || strings.Trim(lines[s.y-2], " ") != "" ||
+		!strictClaudeCompletedTurnRow.MatchString(strings.TrimRight(strictSGRSequence.ReplaceAllString(rawLines[turn], ""), " ")) {
+		return 0
+	}
+	return turn
+}
+
 func strictClaudeBypassComposer(s strictSnapshot, lines []string) string {
 	if s.width <= s.x || s.height <= 0 || len(lines) != s.height || s.x != 2 || s.y < 1 || s.y+3 >= len(lines) {
 		return "composer_geometry_unverified"

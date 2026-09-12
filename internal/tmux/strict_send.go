@@ -173,6 +173,12 @@ func (s *Session) strictSnapshot(pinned string) (strictSnapshot, error) {
 	})
 }
 
+// StrictComposerError is a closed composer-guard refusal from a read-only
+// strict observation. Reason is a fixed identifier, never pane text.
+type StrictComposerError struct{ Reason string }
+
+func (e StrictComposerError) Error() string { return "strict composer unavailable: " + e.Reason }
+
 // StrictProbeIdentity performs one full read-only strict observation, including
 // the composer guard, and returns metadata only. It cannot stage, submit, clear,
 // restore or expose pane text. The command-level probe performs this twice.
@@ -186,7 +192,7 @@ func strictProbeIdentity(tool string, snapshot func(string) (strictSnapshot, err
 		return StrictPaneIdentity{}, err
 	}
 	if reason := strictEmptyComposer(tool, observed); reason != "" {
-		return StrictPaneIdentity{}, fmt.Errorf("strict composer unavailable: %s", reason)
+		return StrictPaneIdentity{}, StrictComposerError{Reason: reason}
 	}
 	return observed.identity, nil
 }
@@ -279,8 +285,19 @@ func strictEmptyComposer(tool string, s strictSnapshot) string {
 	if tool == "codex" && s.y >= 2 && strictCodexImageRow.MatchString(lines[s.y-2]) {
 		return "nontext_draft_present"
 	}
+	// Claude's usage-limit auto-resume countdown ("… · esc to cancel") updates
+	// inside the transcript, so cancel hints stay whole-pane evidence. Menu,
+	// approval and interrupt phrases count only in rows that can hold live UI.
 	lower := strings.ToLower(clean)
-	for _, indicator := range []string{"esc to interrupt", "ctrl+c to interrupt", "do you want to", "would you like to", "enter to confirm", "esc to cancel", "escape to cancel", "allow once", "approval required", "select an option", "❯ 1.", "› 1."} {
+	for _, indicator := range []string{"esc to cancel", "escape to cancel"} {
+		if strings.Contains(lower, indicator) {
+			return "busy_or_modal"
+		}
+	}
+	if claudeNBSP {
+		lower = strings.ToLower(strings.Join(lines[strictClaudeLiveRegionStart(s, rawLines, lines):], "\n"))
+	}
+	for _, indicator := range []string{"esc to interrupt", "ctrl+c to interrupt", "do you want to", "would you like to", "enter to confirm", "allow once", "approval required", "select an option", "❯ 1.", "› 1."} {
 		if strings.Contains(lower, indicator) {
 			return "busy_or_modal"
 		}
