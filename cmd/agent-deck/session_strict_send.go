@@ -249,6 +249,12 @@ func runStrictAdmissionProbe(verifier *strictSessionAdmissionVerifier,
 	for index := range observations {
 		id, observeErr := observe()
 		if observeErr != nil {
+			// Name a closed composer refusal; every other observation failure
+			// (metadata, clients, raw mode, capture) stays opaque.
+			var composer tmux.StrictComposerError
+			if errors.As(observeErr, &composer) && safeStrictProbeReason(composer.Reason) {
+				return observations, fmt.Errorf("%s", composer.Reason)
+			}
 			return observations, fmt.Errorf("tmux_observation_unavailable")
 		}
 		if index == 0 {
