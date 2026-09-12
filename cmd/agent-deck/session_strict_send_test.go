@@ -550,6 +550,46 @@ func TestStrictProbeDiagnosticsAreBoundedAndZeroTimeIsEmpty(t *testing.T) {
 	}
 }
 
+// F-005: an idle pane refused by the composer guard was reported only as
+// tmux_observation_unavailable. The closed composer reason is now reported;
+// other observation failures and untyped text stay opaque.
+func TestStrictProbeReportsComposerRefusalReason(t *testing.T) {
+	thread := "00000000-0000-4000-8000-000000000001"
+	weak := strictNativeThreadProof{Thread: thread, Claude: strictClaudeNativeProof{Thread: thread, CWD: "/project"}}
+	for _, tc := range []struct {
+		name                 string
+		failPass, wantPasses int
+		err                  error
+		want                 string
+	}{
+		{"first_pass_composer", 1, 0, tmux.StrictComposerError{Reason: "busy_or_modal"}, "busy_or_modal"},
+		{"second_pass_composer", 2, 1, tmux.StrictComposerError{Reason: "claude_empty_hint_unverified"}, "claude_empty_hint_unverified"},
+		{"wrapped_composer", 1, 0, fmt.Errorf("observe: %w", tmux.StrictComposerError{Reason: "footer_unknown"}), "footer_unknown"},
+		{"unsafe_composer_reason", 1, 0, tmux.StrictComposerError{Reason: "pane/text leak"}, "tmux_observation_unavailable"},
+		{"untyped_composer_text", 1, 0, errors.New("strict composer unavailable: busy_or_modal"), "tmux_observation_unavailable"},
+		{"capture_failure", 1, 0, errors.New("pane changed during capture"), "tmux_observation_unavailable"},
+		{"operator_activity", 2, 1, errors.New("operator activity unverified or recent"), "tmux_observation_unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := strictVerifierFixture([]strictNativeThreadProof{weak, weak},
+				func(int, session.StrictSendIdleEvidence) session.StrictSendIdleDecision {
+					return session.StrictSendIdleDecision{Admitted: true, Reason: "fresh_hook"}
+				})
+			observed := 0
+			_, err := runStrictAdmissionProbe(v, func() (tmux.StrictPaneIdentity, error) {
+				observed++
+				if observed == tc.failPass {
+					return tmux.StrictPaneIdentity{}, tc.err
+				}
+				return strictVerifiedPaneIdentity(), nil
+			})
+			if err == nil || err.Error() != tc.want || v.passes != tc.wantPasses {
+				t.Fatalf("probe err=%v passes=%d, want %s after %d passes", err, v.passes, tc.want, tc.wantPasses)
+			}
+		})
+	}
+}
+
 func TestStrictAdmissionRefusesThirdVerifierPass(t *testing.T) {
 	thread := "00000000-0000-4000-8000-000000000001"
 	weak := strictNativeThreadProof{Thread: thread, Claude: strictClaudeNativeProof{Thread: thread, CWD: "/project"}}
