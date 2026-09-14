@@ -1561,6 +1561,95 @@ func MigrateLegacyConductors() ([]string, error) {
 // MigrateConductorPolicySplit updates legacy generated per-conductor CLAUDE.md
 // templates to include POLICY.md instructions.
 // It only rewrites non-symlink CLAUDE.md files that exactly match the legacy generated template.
+// writePolicyAtomically replaces path's contents without ever leaving it
+// truncated: write a sibling temp file, fsync it, then rename over the target.
+func writePolicyAtomically(path string, content []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".POLICY.md.*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// MigrateConductorPolicyVoiceRule appends the dictation-safety rule to any
+// existing POLICY.md that predates it, and reports the files it touched.
+//
+// InstallPolicyMD is deliberately non-destructive, so an installation that
+// already has a POLICY.md never gains a newly added rule. For an ordinary
+// style rule that is fine. For this one it is not: the voice preamble no
+// longer carries it, so an upgraded installation ends up with the rule in
+// neither place and can act on a misheard instruction with no confirmation.
+//
+// Appending is the whole design. The file may have been edited by hand, so
+// this never rewrites or reorders existing content, never touches a symlink
+// (that is the user pointing at their own file), and is a no-op once the
+// marker is present.
+func MigrateConductorPolicyVoiceRule() ([]string, error) {
+	base, err := ConductorDir()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(base); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	paths := []string{filepath.Join(base, "POLICY.md")}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read conductor directory: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			paths = append(paths, filepath.Join(base, entry.Name(), "POLICY.md"))
+		}
+	}
+
+	var migrated []string
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		if err != nil {
+			continue // no policy file here
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			continue // the user's own file, or not a file we own
+		}
+		contentBytes, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if PolicyHasVoiceSafetyRule(string(contentBytes)) {
+			continue // already has it, by delimiter or by substance
+		}
+		updated := strings.TrimRight(string(contentBytes), "\n") + "\n" +
+			conductorVoiceSafetyPolicySection
+		// Atomically: os.WriteFile truncates first, so an interruption here
+		// would leave a hand-edited policy empty or half-written -- turning a
+		// safety migration into data loss.
+		if err := writePolicyAtomically(path, []byte(updated), info.Mode().Perm()); err != nil {
+			return migrated, fmt.Errorf("failed to add the voice-safety rule to %s: %w", path, err)
+		}
+		migrated = append(migrated, path)
+	}
+	return migrated, nil
+}
+
 func MigrateConductorPolicySplit() ([]string, error) {
 	base, err := ConductorDir()
 	if err != nil {

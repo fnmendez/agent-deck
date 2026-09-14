@@ -11,12 +11,17 @@ on:
       # reapply.sh patches the canonical bridge at an exact anchor, so a stock
       # bridge change has to re-run the contract test that pins that coupling.
       - 'internal/session/conductor_bridge.py'
+      # I10's dictation-safety rule lives in the policy template, and the
+      # overlay suite asserts it is still there. Without this path a change
+      # that deletes the rule would not run the test that guards it.
+      - 'internal/session/conductor_templates.go'
       - '.github/workflows/conductor-overlay.yml'
   push:
     branches: [main]
     paths:
       - 'conductor/overlay/**'
       - 'internal/session/conductor_bridge.py'
+      - 'internal/session/conductor_templates.go'
       - '.github/workflows/conductor-overlay.yml'
 
 permissions:

@@ -33,11 +33,53 @@ class PromptFraming(unittest.TestCase):
         self.assertNotIn(media.FENCE, self.PROMPT)
 
     def test_it_says_the_words_are_his_and_should_be_acted_on(self):
-        self.assertIn("as if he had typed it", self.PROMPT)
+        # The framing is now carried by the one-line preamble plus the absence
+        # of the untrusted fence: his words are his, not third-party data.
+        self.assertIn("from the operator", self.PROMPT)
+        self.assertNotIn(media.FENCE, self.PROMPT)
 
-    def test_it_carries_the_standing_confirmation_rule(self):
-        self.assertIn("irreversible", self.PROMPT)
-        self.assertIn("ask him to confirm", self.PROMPT)
+    def test_the_preamble_stays_minimal(self):
+        """Franco asked for a minimal preamble.
+
+        "Minimal" is asserted as a bound on the header, deliberately NOT as
+        assertNotIn on the dictation-safety wording. Pinning the *absence* of
+        a security rule nails the relaxation in place: the next session that
+        restores the rule would break this suite and read that as its own
+        regression. A bound says what Franco asked for; it does not forbid
+        the rule from ever coming back.
+        """
+        header = self.PROMPT.split("---")[0]
+        self.assertLessEqual(len(header.strip().splitlines()), 5, header)
+
+    def test_the_dictation_safety_rule_has_a_home(self):
+        """I10: the rule left the preamble, so it has to exist where it went.
+
+        A rule that leaves one file without arriving in the other is a
+        deletion dressed as a relocation. This is the overlay half of the
+        pair; `TestInstallPolicyMD_Default` in internal/session is the other,
+        so removing the rule fails a test whichever side you remove it from.
+        """
+        template = (Path(__file__).resolve().parents[3]
+                    / "internal" / "session" / "conductor_templates.go")
+        self.assertTrue(
+            template.is_file(),
+            "cannot verify the rule's home: %s is missing. I10 names this file "
+            "as where the dictation-safety rule lives; if the layout moved, "
+            "update I10 and this test together." % template,
+        )
+        text = template.read_text(encoding="utf-8")
+        for want in ("speech recognition mishears",
+                     "irreversible or outward-facing",
+                     "restate what you understood"):
+            # assertTrue, not assertIn: assertIn prints the whole haystack on
+            # failure, and the haystack here is the entire template file.
+            self.assertTrue(
+                want in text,
+                "%s no longer carries the dictation-safety rule (missing %r). "
+                "The voice preamble does not carry it either, so the rule "
+                "would exist nowhere. See I10 in conductor/overlay/README.md."
+                % (template.name, want),
+            )
 
     def test_it_carries_provenance_and_the_audio_path(self):
         self.assertIn("whisper.cpp small", self.PROMPT)
