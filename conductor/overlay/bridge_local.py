@@ -39,6 +39,7 @@ except ImportError:  # tests without aiogram
     InlineKeyboardButton = InlineKeyboardMarkup = None  # type: ignore
 
 import documents
+import shared_queue
 import media
 import transcribe
 from delivery import (  # shared truth resolution (same dir, added by the hook to sys.path)
@@ -1087,6 +1088,10 @@ def register(dp, ctx: dict, is_authorized, *, authorized_user_id=None) -> None:
     ]
     for fn, flt in handlers:
         dp.message.register(fn, flt)
+    if authorized_user_id is not None:
+        shared_queue.register(
+            dp, user_id=authorized_user_id, is_authorized=is_authorized, log=log,
+        )
     if F is not None:
         # Media handlers must precede the stock catch-all, which drops every
         # non-text message with `if not message.text: return`.
