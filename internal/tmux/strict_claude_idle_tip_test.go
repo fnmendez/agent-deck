@@ -106,7 +106,7 @@ func TestStrictClaudeMeasuredIdleClearTipThroughCapture(t *testing.T) {
 		return nil, errors.New("unexpected fixture probe")
 	}
 	snapshot := func(pinned string) (strictSnapshot, error) {
-		return captureStrictSnapshot("fixture", pinned, read, func(string) bool { return true })
+		return captureStrictSnapshot("fixture", pinned, 0, read, func(string) bool { return true })
 	}
 	if _, err := strictProbeIdentity("claude", snapshot); err != nil {
 		t.Fatalf("read-only probe refused the measured idle tip: %v", err)

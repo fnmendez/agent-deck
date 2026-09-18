@@ -2693,6 +2693,7 @@ func handleSessionSend(profile string, args []string) {
 	noWait := fs.Bool("no-wait", false, "Don't wait for agent to be ready (send immediately)")
 	strictOnce := fs.Bool("strict-once", false, "Refuse unless the exact thread has an idle empty composer; attempt once, never claim consumption")
 	expectedThread := fs.String("expected-thread", "", "Required native thread UUID for --strict-once")
+	operatorQuiet := fs.Duration("operator-quiet", 0, "With --strict-once: required human-client input quiet window, 5s-60s (default 60s)")
 	wait := fs.Bool("wait", false, "Block until agent finishes processing, then print output")
 	stream := fs.Bool("stream", false, "Stream JSONL events (Claude only) to stdout instead of returning a snapshot")
 	draft := fs.Bool("draft", false, "Pre-fill the prompt without submitting (incompatible with --wait/--stream/--no-wait)")
@@ -2797,11 +2798,16 @@ func handleSessionSend(profile string, args []string) {
 			out.ErrorWithData("--strict-once requires full session ID and --expected-thread; incompatible with draft/wait/stream/no-wait/defer-if-busy", ErrCodeInvalidOperation, map[string]interface{}{"delivery": "refused", "attempted": false, "reason": "invalid_strict_options", "session_id": inst.ID})
 			os.Exit(1)
 		}
-		handleStrictSessionSend(out, inst, *expectedThread, message)
+		quietWindow, quietErr := strictOperatorQuietArgument(flagWasSet(fs, "operator-quiet"), *operatorQuiet, true)
+		if quietErr != nil {
+			out.ErrorWithData(quietErr.Error(), ErrCodeInvalidOperation, map[string]interface{}{"delivery": "refused", "attempted": false, "reason": "invalid_strict_options", "session_id": inst.ID})
+			os.Exit(1)
+		}
+		handleStrictSessionSend(out, inst, *expectedThread, message, quietWindow)
 		return
 	}
-	if *expectedThread != "" {
-		strictInputError("--expected-thread requires --strict-once", ErrCodeInvalidOperation)
+	if _, quietErr := strictOperatorQuietArgument(flagWasSet(fs, "operator-quiet"), *operatorQuiet, false); *expectedThread != "" || quietErr != nil {
+		strictInputError("--expected-thread and --operator-quiet require --strict-once", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
 

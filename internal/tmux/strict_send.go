@@ -80,6 +80,15 @@ func strictPasteSubmitArgs(pane, buffer string, manualBracket bool) []string {
 		";", "send-keys", "-t", pane, "Enter")
 }
 
+// strictSnapshotRefusal names only the closed operator-activity refusal; every
+// other observation failure stays capture_failed.
+func strictSnapshotRefusal(err error) string {
+	if composer, ok := err.(StrictComposerError); ok && composer.Reason == "active_client" {
+		return composer.Reason
+	}
+	return "capture_failed"
+}
+
 func strictRefusal(reason string) (StrictSendResult, error) {
 	return StrictSendResult{Delivery: "refused", Reason: reason}, fmt.Errorf("strict send refused: %s", reason)
 }
@@ -101,7 +110,7 @@ func strictSendOnce(tool, message string, verify func(StrictPaneIdentity) error,
 	}
 	first, err := ops.snapshot("")
 	if err != nil {
-		return strictRefusal("capture_failed")
+		return strictRefusal(strictSnapshotRefusal(err))
 	}
 	if reason := strictEmptyComposer(tool, first); reason != "" {
 		return strictRefusal(reason)
@@ -133,7 +142,7 @@ func strictSendOnce(tool, message string, verify func(StrictPaneIdentity) error,
 	}
 	last, err := ops.snapshot(first.identity.PaneID)
 	if err != nil {
-		return strictRefusal("capture_failed")
+		return strictRefusal(strictSnapshotRefusal(err))
 	}
 	if first.identity != last.identity {
 		return strictRefusal("pane_changed")
@@ -166,8 +175,28 @@ func strictTmux36ManualBracket(id StrictPaneIdentity) bool {
 	return id.ServerVersion == "3.6" && id.BracketPaste == ""
 }
 
+// Operator-quiet bounds. The window guards only the race between the final
+// observation and paste+Enter; a draft typed earlier is refused by the
+// empty-composer proof whatever the window.
+const (
+	StrictOperatorQuietMin     = 5 * time.Second
+	StrictOperatorQuietDefault = 60 * time.Second
+)
+
+// ValidStrictOperatorQuiet reports whether d is an admissible explicit window.
+func ValidStrictOperatorQuiet(d time.Duration) bool {
+	return d >= StrictOperatorQuietMin && d <= StrictOperatorQuietDefault
+}
+
+func strictOperatorQuietWindow(d time.Duration) time.Duration {
+	if !ValidStrictOperatorQuiet(d) {
+		return StrictOperatorQuietDefault
+	}
+	return d
+}
+
 func (s *Session) strictSnapshot(pinned string) (strictSnapshot, error) {
-	return captureStrictSnapshot(s.Name, pinned, s.runBoundedOutput, func(target string) bool {
+	return captureStrictSnapshot(s.Name, pinned, strictOperatorQuietWindow(s.StrictOperatorQuiet), s.runBoundedOutput, func(target string) bool {
 		discipline, err := s.paneLineDiscipline(target)
 		return err == nil && !discipline.Canonical
 	})
@@ -197,7 +226,7 @@ func strictProbeIdentity(tool string, snapshot func(string) (strictSnapshot, err
 	return observed.identity, nil
 }
 
-func captureStrictSnapshot(name, pinned string, read func(...string) ([]byte, error), rawMode func(string) bool) (strictSnapshot, error) {
+func captureStrictSnapshot(name, pinned string, quiet time.Duration, read func(...string) ([]byte, error), rawMode func(string) bool) (strictSnapshot, error) {
 	observedAt := time.Now()
 	// Include both immutable target and dynamic active pane selection in each
 	// sample: an active-pane switch must refuse, never redirect or hit a stale UI.
@@ -229,8 +258,16 @@ func captureStrictSnapshot(name, pinned string, read func(...string) ([]byte, er
 		return strictSnapshot{}, fmt.Errorf("invalid cursor")
 	}
 	clients, err := read("list-clients", "-t", fields[0], "-F", "#{client_control_mode}|#{client_activity}")
-	if err != nil || !strictOperatorIdle(string(clients), time.Now()) {
-		return strictSnapshot{}, fmt.Errorf("operator activity unverified or recent")
+	if err != nil {
+		return strictSnapshot{}, fmt.Errorf("operator activity unverified")
+	}
+	switch strictOperatorState(string(clients), time.Now(), strictOperatorQuietWindow(quiet)) {
+	case strictOperatorQuiet:
+	case strictOperatorRecent:
+		// Named, closed refusal: a human client sent input inside the window.
+		return strictSnapshot{}, StrictComposerError{Reason: "active_client"}
+	default:
+		return strictSnapshot{}, fmt.Errorf("operator activity unverified")
 	}
 	if !rawMode(target) {
 		return strictSnapshot{}, fmt.Errorf("raw terminal mode unverified")
@@ -346,29 +383,39 @@ func strictDivider(s string) bool {
 
 // An attached human who used the terminal within the last minute owns input.
 // Control-mode clients are excluded only with explicit positive identification.
-func strictOperatorIdle(clients string, now time.Time) bool {
+type strictOperatorActivity int
+
+const (
+	strictOperatorUnverified strictOperatorActivity = iota
+	strictOperatorQuiet
+	strictOperatorRecent
+)
+
+// strictOperatorState classifies every non-control client's last input.
+// Malformed rows stay unverified; control-mode clients are automation.
+func strictOperatorState(clients string, now time.Time, window time.Duration) strictOperatorActivity {
+	state := strictOperatorQuiet
 	for _, line := range strings.Split(strings.TrimSpace(clients), "\n") {
 		if line == "" {
 			continue
 		}
 		fields := strings.Split(line, "|")
 		if len(fields) != 2 {
-			return false
+			return strictOperatorUnverified
 		}
 		if fields[0] == "1" {
 			continue
 		}
 		if fields[0] != "0" {
-			return false
+			return strictOperatorUnverified
 		}
 		ts, err := strconv.ParseInt(fields[1], 10, 64)
 		if err != nil || ts <= 0 {
-			return false
+			return strictOperatorUnverified
 		}
-		age := now.Sub(time.Unix(ts, 0))
-		if age < 60*time.Second {
-			return false
+		if now.Sub(time.Unix(ts, 0)) < window {
+			state = strictOperatorRecent
 		}
 	}
-	return true
+	return state
 }

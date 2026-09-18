@@ -203,7 +203,7 @@ func TestStrictClaudeDirectorNBSPThroughCapture(t *testing.T) {
 			}
 			result, err := strictSendOnce("claude", "fixture payload", func(StrictPaneIdentity) error { return nil }, strictOps{
 				snapshot: func(pinned string) (strictSnapshot, error) {
-					return captureStrictSnapshot("fixture", pinned, read, func(string) bool { return true })
+					return captureStrictSnapshot("fixture", pinned, 0, read, func(string) bool { return true })
 				},
 				stage: func(string) (string, error) { stages++; return "f", nil }, drop: func(string) {},
 				submit: func(string, string) error { submits++; return nil },

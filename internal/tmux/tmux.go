@@ -1151,6 +1151,12 @@ type Session struct {
 	// Off by default (zero value) — non-vim sessions and other tools are
 	// unaffected. Populated at session-creation time from [claude].vim_mode.
 	VimMode bool
+	// StrictOperatorQuiet is how long every human tmux client must have sent no
+	// input before a strict observation admits the pane. Zero means the reviewed
+	// default (60s). Claude enables all-motion mouse tracking, so mouse movement
+	// over a visible tab counts as input; callers may opt into a shorter window,
+	// bounded by StrictOperatorQuietMin. The empty-composer proof is unchanged.
+	StrictOperatorQuiet time.Duration
 
 	// LaunchInUserScope starts the tmux server through systemd-run --user --scope
 	// so the server is owned by the user's systemd manager instead of the current
