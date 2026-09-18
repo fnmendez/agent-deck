@@ -37,15 +37,15 @@ type strictClaudeLinuxDeps struct {
 	stat           func(string) (os.FileInfo, error)
 	machineIDPath  string
 	machineIDOwner int
-	packageProof   func(string, string, int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error)
-	uid            int
+	packageProof   func(string, int, int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error)
+	uid, gid       int
 }
 
 func strictClaudeLinuxDefaultDeps() strictClaudeLinuxDeps {
 	return strictClaudeLinuxDeps{
 		procRoot: "/proc", bind: strictClaudeOwnedBinding, readBounded: strictLinuxReadBounded,
 		readlink: os.Readlink, open: os.Open, stat: os.Stat, machineIDPath: "/etc/machine-id", machineIDOwner: 0,
-		packageProof: strictClaudeLinuxPackageProof, uid: os.Getuid(),
+		packageProof: strictClaudeLinuxPackageProof, uid: os.Getuid(), gid: os.Getgid(),
 	}
 }
 
@@ -53,13 +53,14 @@ type strictClaudeLinuxProcess struct {
 	PID, PPID, PGID, SID, TPGID, TTY, Start, State, Executable, ExecutableSHA, MachineID, MachineIDProof string
 	UID, Device, Inode, Size                                                                             uint64
 	Mode                                                                                                 uint32
+	ModTime                                                                                              int64
 	StartedAt                                                                                            time.Time
 }
 
 func (p strictClaudeLinuxProcess) signature() string {
 	return strings.Join([]string{p.PID, p.PPID, p.PGID, p.SID, p.TPGID, p.TTY, p.Start,
 		strconv.FormatUint(p.UID, 10), p.Executable, fmt.Sprintf("%x", p.Device),
-		strconv.FormatUint(p.Inode, 10), strconv.FormatUint(p.Size, 10), fmt.Sprintf("%o", p.Mode),
+		strconv.FormatUint(p.Inode, 10), strconv.FormatUint(p.Size, 10), fmt.Sprintf("%o", p.Mode), strconv.FormatInt(p.ModTime, 10),
 		p.StartedAt.Format(time.RFC3339Nano), p.ExecutableSHA, p.MachineID, p.MachineIDProof}, ",")
 }
 
@@ -122,7 +123,10 @@ func strictClaudeLinuxThreadProofWithDeps(inst *session.Instance, target *tmux.S
 		return strictClaudeNativeProof{}, fmt.Errorf("native session identity mismatch")
 	}
 	firstRecordSignature := strictClaudeLinuxRecordSignature(firstRecord, record)
-	firstPackage, heldPackage, err := deps.packageProof(home, record.Version, deps.uid)
+	// The record's version names the image THIS process runs, fixed for its lifetime.
+	// The installed package names the generation installed NOW, which the in-place
+	// auto-updater replaces under live sessions, so it cannot vouch for either.
+	firstPackage, heldPackage, err := deps.packageProof(home, deps.uid, deps.gid)
 	if err != nil {
 		return strictClaudeNativeProof{}, fmt.Errorf("native package unavailable: %w", err)
 	}
@@ -151,7 +155,7 @@ func strictClaudeLinuxThreadProofWithDeps(inst *session.Instance, target *tmux.S
 		firstRecordSignature != strictClaudeLinuxRecordSignature(secondRecord, secondDecoded) {
 		return strictClaudeNativeProof{}, fmt.Errorf("native record changed")
 	}
-	secondPackage, heldPackageAgain, err := deps.packageProof(home, secondDecoded.Version, deps.uid)
+	secondPackage, heldPackageAgain, err := deps.packageProof(home, deps.uid, deps.gid)
 	if err != nil || firstPackage.signature() != secondPackage.signature() {
 		if heldPackageAgain != nil {
 			heldPackageAgain.Close()
@@ -282,24 +286,22 @@ func (b strictClaudeLinuxDirectoryBinding) signature() string {
 
 type strictClaudeLinuxPackage struct {
 	Directory  strictClaudeLinuxDirectoryBinding
-	Manifest   strictClaudeFileBinding
 	Executable strictClaudeFileBinding
-	Version    string
 }
 
 func (p strictClaudeLinuxPackage) signature() string {
-	return strings.Join([]string{p.Directory.signature(), p.Manifest.signature(), p.Executable.signature(), p.Version}, "|")
+	return strings.Join([]string{p.Directory.signature(), p.Executable.signature()}, "|")
 }
 
 type strictClaudeLinuxPackageHandles struct {
-	directory, manifest, executable *os.File
+	directory, executable *os.File
 }
 
 func (h *strictClaudeLinuxPackageHandles) Close() {
 	if h == nil {
 		return
 	}
-	for _, file := range []*os.File{h.executable, h.manifest, h.directory} {
+	for _, file := range []*os.File{h.executable, h.directory} {
 		if file != nil {
 			file.Close()
 		}
@@ -311,11 +313,19 @@ func strictClaudeLinuxPackagePath(home string) string {
 		"lib", "node_modules", "@anthropic-ai", "claude-code")
 }
 
-func strictClaudeLinuxPackageProof(home, recordVersion string, uid int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
-	return strictClaudeLinuxPackageProofWithLinks(home, recordVersion, uid, 4, 2)
+func strictClaudeLinuxPackageProof(home string, uid, gid int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
+	return strictClaudeLinuxPackageProofWithLinks(home, uid, gid, 4, 2)
 }
 
-func strictClaudeLinuxPackageProofWithLinks(home, recordVersion string, uid int,
+// npm writes the package tree with the umask of whichever session ran the
+// auto-update, so the same install is 0755 or 0775. A group-write bit is admitted
+// only for the caller's own primary group; the parent @anthropic-ai directory,
+// which controls replacing this one, carries the same bit and is not a boundary.
+func strictClaudeLinuxPackageDirectoryMode(mode os.FileMode, directoryGID uint32, gid int) bool {
+	return mode == 0755 || mode == 0775 && gid >= 0 && uint64(directoryGID) == uint64(gid)
+}
+
+func strictClaudeLinuxPackageProofWithLinks(home string, uid, gid int,
 	directoryLinks, executableLinks uint64) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
 	var proof strictClaudeLinuxPackage
 	handles := &strictClaudeLinuxPackageHandles{}
@@ -337,7 +347,7 @@ func strictClaudeLinuxPackageProofWithLinks(home, recordVersion string, uid int,
 	if !ok {
 		return fail("unsafe native package directory stat")
 	}
-	if !directoryBefore.IsDir() || directoryBefore.Mode().Perm() != 0755 || int(directoryStat.Uid) != uid ||
+	if !directoryBefore.IsDir() || !strictClaudeLinuxPackageDirectoryMode(directoryBefore.Mode().Perm(), directoryStat.Gid, gid) || int(directoryStat.Uid) != uid ||
 		uint64(directoryStat.Nlink) != directoryLinks {
 		return fail("unsafe native package directory")
 	}
@@ -347,17 +357,6 @@ func strictClaudeLinuxPackageProofWithLinks(home, recordVersion string, uid int,
 	}
 	proof.Directory = strictClaudeLinuxDirectoryBinding{Path: packagePath, Ancestors: ancestors, Device: device,
 		Inode: inode, Nlink: uint64(directoryStat.Nlink), ModTime: directoryBefore.ModTime().UnixNano(), Mode: uint32(directoryBefore.Mode().Perm())}
-	manifestPath := filepath.Join(packagePath, "package.json")
-	manifest, manifestFile, manifestData, err := strictClaudeLinuxOwnedPackageFile(manifestPath, 64*1024, true, 0644, 1, uid)
-	if err != nil {
-		return fail("native package manifest unavailable")
-	}
-	handles.manifest = manifestFile
-	name, version, err := strictClaudeLinuxPackageMetadata(manifestData)
-	if err != nil || name != "@anthropic-ai/claude-code" || version != recordVersion || !strictClaudeNativeVersion.MatchString(version) {
-		return fail("native package version mismatch")
-	}
-	proof.Manifest, proof.Version = manifest, version
 	executablePath := filepath.Join(packagePath, "bin", "claude.exe")
 	executable, executableFile, _, err := strictClaudeLinuxOwnedPackageFile(executablePath, 512*1024*1024, false, 0755, executableLinks, uid)
 	if err != nil {
@@ -371,7 +370,8 @@ func strictClaudeLinuxPackageProofWithLinks(home, recordVersion string, uid int,
 	}
 	afterStat, afterOK := directoryAfter.Sys().(*syscall.Stat_t)
 	if !afterOK || directoryBefore.Mode() != directoryAfter.Mode() ||
-		!directoryBefore.ModTime().Equal(directoryAfter.ModTime()) || directoryStat.Uid != afterStat.Uid || directoryStat.Nlink != afterStat.Nlink {
+		!directoryBefore.ModTime().Equal(directoryAfter.ModTime()) || directoryStat.Uid != afterStat.Uid ||
+		directoryStat.Gid != afterStat.Gid || directoryStat.Nlink != afterStat.Nlink {
 		return fail("native package directory changed")
 	}
 	return proof, handles, nil
@@ -429,36 +429,6 @@ func strictClaudeLinuxOwnedPackageFile(path string, maxSize int64, capture bool,
 	return strictClaudeFileBinding{Path: path, Ancestors: ancestors, ContentSHA: fmt.Sprintf("%x", hash.Sum(nil)),
 		Device: device, Inode: inode, Nlink: uint64(afterStat.Nlink), Size: after.Size(), ModTime: after.ModTime().UnixNano(),
 		Mode: uint32(after.Mode().Perm())}, file, data, nil
-}
-
-func strictClaudeLinuxPackageMetadata(data []byte) (string, string, error) {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	opening, err := decoder.Token()
-	if err != nil || opening != json.Delim('{') {
-		return "", "", fmt.Errorf("native package manifest is not an object")
-	}
-	seen := map[string]bool{}
-	name, version := "", ""
-	for decoder.More() {
-		token, err := decoder.Token()
-		key, ok := token.(string)
-		if err != nil || !ok || seen[key] {
-			return "", "", fmt.Errorf("duplicate native package field")
-		}
-		seen[key] = true
-		var raw json.RawMessage
-		if decoder.Decode(&raw) != nil {
-			return "", "", fmt.Errorf("malformed native package field")
-		}
-		if key == "name" && json.Unmarshal(raw, &name) != nil || key == "version" && json.Unmarshal(raw, &version) != nil {
-			return "", "", fmt.Errorf("invalid native package identity")
-		}
-	}
-	closing, err := decoder.Token()
-	if err != nil || closing != json.Delim('}') || decoder.Decode(new(any)) != io.EOF || name == "" || version == "" {
-		return "", "", fmt.Errorf("incomplete native package identity")
-	}
-	return name, version, nil
 }
 
 func strictLinuxMachineIDProof(path string, owner int) (strictClaudeFileBinding, *os.File, []byte, error) {
@@ -582,7 +552,14 @@ func strictClaudeLinuxProcessProof(record strictClaudeRecord, id tmux.StrictPane
 	if atomicResidue {
 		expectedLinks = 0
 	}
-	if !ok || !info.Mode().IsRegular() || info.Size() != pkg.Executable.Size || info.Mode().Perm() != os.FileMode(pkg.Executable.Mode) ||
+	// An in-place upgrade unlinks the image a live session runs and installs a
+	// different one, so only the stable image can equal the installed size; the
+	// residue keeps the install's owner, mode and device and a bounded size.
+	sizeValid := info.Size() == pkg.Executable.Size
+	if atomicResidue {
+		sizeValid = info.Size() > 0 && info.Size() <= 512*1024*1024
+	}
+	if !ok || !info.Mode().IsRegular() || !sizeValid || info.Mode().Perm() != os.FileMode(pkg.Executable.Mode) ||
 		int(underlying.Uid) != deps.uid || uint64(underlying.Nlink) != expectedLinks {
 		return fail("unsafe process executable")
 	}
@@ -593,11 +570,14 @@ func strictClaudeLinuxProcessProof(record strictClaudeRecord, id tmux.StrictPane
 	}
 	executableSHA := pkg.Executable.ContentSHA
 	if atomicResidue {
-		hash := sha256.New()
-		count, hashErr := io.Copy(hash, io.LimitReader(held, pkg.Executable.Size+1))
-		executableSHA = fmt.Sprintf("%x", hash.Sum(nil))
+		// Nothing on disk can equal an image the upgrade replaced, and the kernel
+		// refuses writes to a running text file (ETXTBSY), so its unchanged inode
+		// identity is its content proof. A byte comparison would only ever refuse
+		// an honest upgrade: anyone able to plant a residue in this tree can as
+		// well replace the stable executable, which keeps its full content proof.
+		executableSHA = ""
 		after, statErr := held.Stat()
-		if hashErr != nil || count != pkg.Executable.Size || executableSHA != pkg.Executable.ContentSHA || statErr != nil {
+		if statErr != nil {
 			return fail("atomic-update executable changed or differs")
 		}
 		afterUnderlying, afterOK := after.Sys().(*syscall.Stat_t)
@@ -614,7 +594,10 @@ func strictClaudeLinuxProcessProof(record strictClaudeRecord, id tmux.StrictPane
 	}
 	process.Executable, process.ExecutableSHA = executable, executableSHA
 	process.UID, process.Device, process.Inode = uint64(deps.uid), device, inode // #nosec G115 -- uid equality with the kernel stat value above proves a valid non-negative OS uid.
-	process.Size, process.Mode = uint64(info.Size()), uint32(info.Mode().Perm()) // #nosec G115 -- the held descriptor is a regular file with the exact non-negative package size proved above.
+	process.Size, process.Mode = uint64(info.Size()), uint32(info.Mode().Perm()) // #nosec G115 -- the held descriptor is a regular file with the non-negative bounded size proved above.
+	// Without a content hash for the residue, its modification time carries any
+	// change to the held image across the two passes, as its size and inode do.
+	process.ModTime = info.ModTime().UnixNano()
 	return process, handles, nil
 }
 

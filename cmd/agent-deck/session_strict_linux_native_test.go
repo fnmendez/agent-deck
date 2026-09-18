@@ -104,8 +104,8 @@ func newStrictClaudeLinuxFixture(t *testing.T) *strictClaudeLinuxFixture {
 	}
 	packageLinks := uint64(packageInfo.Sys().(*syscall.Stat_t).Nlink)
 	executableLinks := uint64(executableInfo.Sys().(*syscall.Stat_t).Nlink)
-	fixturePackageProof := func(home, version string, uid int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
-		return strictClaudeLinuxPackageProofWithLinks(home, version, uid, packageLinks, executableLinks)
+	fixturePackageProof := func(home string, uid, gid int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
+		return strictClaudeLinuxPackageProofWithLinks(home, uid, gid, packageLinks, executableLinks)
 	}
 	if err := os.Symlink(executable, filepath.Join(processRoot, "exe")); err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func newStrictClaudeLinuxFixture(t *testing.T) *strictClaudeLinuxFixture {
 		record: record,
 		deps: strictClaudeLinuxDeps{procRoot: procRoot, bind: strictClaudeOwnedBinding, readBounded: strictLinuxReadBounded,
 			readlink: os.Readlink, open: os.Open, stat: os.Stat, machineIDPath: machineIDPath, machineIDOwner: os.Getuid(),
-			packageProof: fixturePackageProof, uid: os.Getuid()},
+			packageProof: fixturePackageProof, uid: os.Getuid(), gid: os.Getgid()},
 	}
 	fixture.writeRecord(t)
 	if err := os.WriteFile(rootPath, []byte("{}\n"), 0600); err != nil {
@@ -247,7 +247,7 @@ func TestStrictClaudeLinuxExactNativeProof(t *testing.T) {
 	}
 }
 
-func TestStrictClaudeLinuxAtomicUpdateResidueRequiresExactEquivalence(t *testing.T) {
+func TestStrictClaudeLinuxAtomicUpdateResidueBindsTheRunningImage(t *testing.T) {
 	t.Run("same_version_same_bytes", func(t *testing.T) {
 		f := newStrictClaudeLinuxFixture(t)
 		f.useAtomicResidue(t, nil, true)
@@ -256,34 +256,75 @@ func TestStrictClaudeLinuxAtomicUpdateResidueRequiresExactEquivalence(t *testing
 			t.Fatalf("exact atomic-update residue refused: proof=%+v err=%v", proof, err)
 		}
 	})
-	t.Run("hash_mismatch", func(t *testing.T) {
+	// The auto-updater installed a newer generation under the live session: the
+	// running image differs in bytes and size, and the installed manifest names
+	// another version than the one this process recorded for itself.
+	t.Run("in_place_upgrade_under_a_live_session", func(t *testing.T) {
 		f := newStrictClaudeLinuxFixture(t)
-		content, err := os.ReadFile(f.executablePath)
-		if err != nil {
+		f.useAtomicResidue(t, []byte("the older superseded native Linux Claude image"), true)
+		// The upgrade also rewrote the manifest with another version and the updating
+		// session's umask; the manifest is not part of the proof, so neither matters.
+		if err := os.WriteFile(f.manifestPath, []byte(`{"name":"@anthropic-ai/claude-code","version":"2.1.276"}`), 0664); err != nil {
 			t.Fatal(err)
 		}
-		content[0] ^= 1
-		f.useAtomicResidue(t, content, true)
-		if proof, err := f.proof(); err == nil || proof.DurableStop {
-			t.Fatalf("different residue bytes admitted: %+v err=%v", proof, err)
+		if err := os.Chmod(f.manifestPath, 0664); err != nil {
+			t.Fatal(err)
+		}
+		proof, err := f.proof()
+		if err != nil || !proof.DurableStop || proof.Thread != strictLinuxFixtureThread ||
+			!strings.Contains(proof.Signature, ".claude-code-XnC2OMep/bin/claude.exe (deleted)") {
+			t.Fatalf("live session refused after an in-place CLI upgrade: proof=%+v err=%v", proof, err)
 		}
 	})
-	t.Run("linked_not_deleted", func(t *testing.T) {
-		f := newStrictClaudeLinuxFixture(t)
-		f.useAtomicResidue(t, nil, false)
-		if proof, err := f.proof(); err == nil || proof.DurableStop {
-			t.Fatalf("linked temp executable admitted as deleted residue: %+v err=%v", proof, err)
+	for _, tc := range []struct {
+		name    string
+		content []byte
+		unlink  bool
+		mode    os.FileMode
+	}{
+		{"linked_not_deleted", nil, false, 0755},
+		{"empty_image", []byte{}, true, 0755},
+		{"mode_differs_from_the_install", []byte("the older superseded native Linux Claude image"), true, 0700},
+		{"group_writable_image", []byte("the older superseded native Linux Claude image"), true, 0775},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStrictClaudeLinuxFixture(t)
+			residue := f.useAtomicResidue(t, tc.content, tc.unlink)
+			if err := residue.Chmod(tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			if proof, err := f.proof(); err == nil || proof.DurableStop {
+				t.Fatalf("%s admitted: %+v err=%v", tc.name, proof, err)
+			}
+		})
+	}
+}
+
+// npm writes the package tree with the updating session's umask, so a live install
+// is 0755 or 0775. Group write is admitted only for the caller's own primary group.
+func TestStrictClaudeLinuxPackageDirectoryAdmitsTheCallersOwnGroupWrite(t *testing.T) {
+	f := newStrictClaudeLinuxFixture(t)
+	if err := os.Chmod(f.packagePath, 0775); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(f.packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gid := info.Sys().(*syscall.Stat_t).Gid; uint64(gid) != uint64(os.Getgid()) {
+		t.Skipf("fixture directory group %d is not the caller's primary group", gid)
+	}
+	if proof, err := f.proof(); err != nil || !proof.DurableStop {
+		t.Fatalf("0775 package directory of the caller's own group refused: %+v err=%v", proof, err)
+	}
+	for mode, admitted := range map[os.FileMode]bool{0755: true, 0775: true, 0777: false, 0757: false, 0765: false, 0700: false} {
+		if strictClaudeLinuxPackageDirectoryMode(mode, uint32(os.Getgid()), os.Getgid()) != admitted {
+			t.Fatalf("mode %o admitted=%v", mode, !admitted)
 		}
-	})
-	t.Run("version_mismatch", func(t *testing.T) {
-		f := newStrictClaudeLinuxFixture(t)
-		f.useAtomicResidue(t, nil, true)
-		f.record.Version = "2.1.269"
-		f.writeRecord(t)
-		if proof, err := f.proof(); err == nil || proof.DurableStop {
-			t.Fatalf("mismatched record/package version admitted: %+v err=%v", proof, err)
-		}
-	})
+	}
+	if strictClaudeLinuxPackageDirectoryMode(0775, uint32(os.Getgid())+1, os.Getgid()) {
+		t.Fatal("0775 admitted for another group")
+	}
 }
 
 func TestStrictClaudeLinuxAtomicResiduePathGrammarIsClosed(t *testing.T) {
@@ -310,7 +351,7 @@ func TestStrictClaudeLinuxAtomicResiduePathGrammarIsClosed(t *testing.T) {
 }
 
 func TestStrictClaudeLinuxRejectsIndependentIdentityFaults(t *testing.T) {
-	for _, fault := range []string{"missing_process", "process_churn", "wrong_start", "wrong_wall_start", "pid_reuse", "wrong_pgid", "wrong_sid", "background", "stopped", "tracing_stop", "zombie", "dead_lower", "wrong_uid", "wrong_executable", "wrong_instance", "wrong_socket", "wrong_session", "wrong_pane", "wrong_cwd", "wrong_tty", "wrong_domain", "boot_id_domain", "missing_machine_id", "wrong_machine_id", "malformed_machine_id", "machine_id_mode", "machine_id_link", "machine_id_path", "unsafe_record", "duplicate_record", "unsafe_record_path", "record_churn", "missing_root", "duplicate_root", "root_churn", "package_path", "package_owner", "package_mode", "package_link", "manifest_path", "manifest_mode", "manifest_link", "manifest_content", "manifest_churn", "package_version", "executable_path", "executable_mode", "executable_link", "executable_content"} {
+	for _, fault := range []string{"missing_process", "process_churn", "wrong_start", "wrong_wall_start", "pid_reuse", "wrong_pgid", "wrong_sid", "background", "stopped", "tracing_stop", "zombie", "dead_lower", "wrong_uid", "wrong_executable", "wrong_instance", "wrong_socket", "wrong_session", "wrong_pane", "wrong_cwd", "wrong_tty", "wrong_domain", "boot_id_domain", "missing_machine_id", "wrong_machine_id", "malformed_machine_id", "machine_id_mode", "machine_id_link", "machine_id_path", "unsafe_record", "duplicate_record", "unsafe_record_path", "record_churn", "missing_root", "duplicate_root", "root_churn", "package_path", "package_owner", "package_mode", "package_group", "package_link", "executable_path", "executable_mode", "executable_link", "executable_content"} {
 		t.Run(fault, func(t *testing.T) {
 			f := newStrictClaudeLinuxFixture(t)
 			switch fault {
@@ -471,52 +512,26 @@ func TestStrictClaudeLinuxRejectsIndependentIdentityFaults(t *testing.T) {
 				}
 			case "package_owner":
 				baseProof := f.deps.packageProof
-				f.deps.packageProof = func(home, version string, uid int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
-					return baseProof(home, version, uid+1)
+				f.deps.packageProof = func(home string, uid, gid int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
+					return baseProof(home, uid+1, gid)
 				}
 			case "package_mode":
+				if err := os.Chmod(f.packagePath, 0777); err != nil {
+					t.Fatal(err)
+				}
+			case "package_group":
+				// Group write is admitted only for the caller's own primary group.
 				if err := os.Chmod(f.packagePath, 0775); err != nil {
 					t.Fatal(err)
+				}
+				baseProof := f.deps.packageProof
+				f.deps.packageProof = func(home string, uid, gid int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
+					return baseProof(home, uid, gid+1)
 				}
 			case "package_link":
 				if err := os.Mkdir(filepath.Join(f.packagePath, "unexpected"), 0755); err != nil {
 					t.Fatal(err)
 				}
-			case "manifest_path":
-				if err := os.Rename(f.manifestPath, f.manifestPath+".real"); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(f.manifestPath+".real", f.manifestPath); err != nil {
-					t.Fatal(err)
-				}
-			case "manifest_mode":
-				if err := os.Chmod(f.manifestPath, 0664); err != nil {
-					t.Fatal(err)
-				}
-			case "manifest_link":
-				if err := os.Link(f.manifestPath, f.manifestPath+".link"); err != nil {
-					t.Fatal(err)
-				}
-			case "manifest_content":
-				if err := os.WriteFile(f.manifestPath, []byte(`{"name":"other","version":"2.1.268"}`), 0644); err != nil {
-					t.Fatal(err)
-				}
-			case "manifest_churn":
-				baseProof := f.deps.packageProof
-				calls := 0
-				f.deps.packageProof = func(home, version string, uid int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
-					calls++
-					proof, handles, err := baseProof(home, version, uid)
-					if err == nil && calls == 1 {
-						if writeErr := os.WriteFile(f.manifestPath, []byte(`{"name":"@anthropic-ai/claude-code","version":"2.1.268","description":"changed"}`), 0644); writeErr != nil {
-							t.Fatal(writeErr)
-						}
-					}
-					return proof, handles, err
-				}
-			case "package_version":
-				f.record.Version = "2.1.269"
-				f.writeRecord(t)
 			case "executable_path":
 				if err := os.Rename(f.executablePath, f.executablePath+".real"); err != nil {
 					t.Fatal(err)
@@ -535,9 +550,9 @@ func TestStrictClaudeLinuxRejectsIndependentIdentityFaults(t *testing.T) {
 			case "executable_content":
 				baseProof := f.deps.packageProof
 				calls := 0
-				f.deps.packageProof = func(home, version string, uid int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
+				f.deps.packageProof = func(home string, uid, gid int) (strictClaudeLinuxPackage, *strictClaudeLinuxPackageHandles, error) {
 					calls++
-					proof, handles, err := baseProof(home, version, uid)
+					proof, handles, err := baseProof(home, uid, gid)
 					if err == nil && calls == 1 {
 						if writeErr := os.WriteFile(f.executablePath, []byte("changed native Linux Claude fixture"), 0755); writeErr != nil {
 							t.Fatal(writeErr)
@@ -653,7 +668,7 @@ func TestStrictClaudeLinuxVerifierMintsExactTmux36Authorization(t *testing.T) {
 }
 
 func TestStrictClaudeLinuxFinalRecheckRejectsAuthorityMutation(t *testing.T) {
-	for _, mutation := range []string{"record", "record_path", "record_mode", "record_link", "machine_id_path", "root", "manifest", "executable", "atomic_residue_content", "executable_link", "package_mode", "package_content"} {
+	for _, mutation := range []string{"record", "record_path", "record_mode", "record_link", "machine_id_path", "root", "executable", "atomic_residue_content", "executable_link", "package_mode", "package_content"} {
 		t.Run(mutation, func(t *testing.T) {
 			f := newStrictClaudeLinuxFixture(t)
 			var residue *os.File
@@ -700,10 +715,6 @@ func TestStrictClaudeLinuxFinalRecheckRejectsAuthorityMutation(t *testing.T) {
 				}
 			case "root":
 				if err := os.WriteFile(f.rootPath, []byte("changed\n"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			case "manifest":
-				if err := os.WriteFile(f.manifestPath, []byte(`{"name":"@anthropic-ai/claude-code","version":"2.1.268","description":"changed"}`), 0644); err != nil {
 					t.Fatal(err)
 				}
 			case "executable":
@@ -769,7 +780,6 @@ func TestStrictClaudeLinuxMachineIDFormatIsExact(t *testing.T) {
 
 func TestStrictClaudeLinuxPackageFilesRequireExactOwner(t *testing.T) {
 	f := newStrictClaudeLinuxFixture(t)
-	manifestInfo, _ := os.Stat(f.manifestPath)
 	executableInfo, _ := os.Stat(f.executablePath)
 	for _, tc := range []struct {
 		path    string
@@ -778,7 +788,6 @@ func TestStrictClaudeLinuxPackageFilesRequireExactOwner(t *testing.T) {
 		mode    os.FileMode
 		links   uint64
 	}{
-		{f.manifestPath, 64 * 1024, true, 0644, uint64(manifestInfo.Sys().(*syscall.Stat_t).Nlink)},
 		{f.executablePath, 512 * 1024 * 1024, false, 0755, uint64(executableInfo.Sys().(*syscall.Stat_t).Nlink)},
 	} {
 		if _, file, _, err := strictClaudeLinuxOwnedPackageFile(tc.path, tc.limit, tc.capture, tc.mode, tc.links, os.Getuid()+1); err == nil {
@@ -833,32 +842,12 @@ func TestStrictClaudeLinuxRecordBounds(t *testing.T) {
 	}
 }
 
-func TestStrictClaudeLinuxPackageMetadataIsExact(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-		valid      bool
-	}{
-		{"valid", `{"name":"@anthropic-ai/claude-code","version":"2.1.268"}`, true},
-		{"duplicate", `{"name":"@anthropic-ai/claude-code","version":"2.1.268","version":"2.1.269"}`, false},
-		{"wrong_type", `{"name":"@anthropic-ai/claude-code","version":268}`, false},
-		{"missing", `{"name":"@anthropic-ai/claude-code"}`, false},
-		{"trailing", `{"name":"@anthropic-ai/claude-code","version":"2.1.268"}x`, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := strictClaudeLinuxPackageMetadata([]byte(tc.body))
-			if (err == nil) != tc.valid {
-				t.Fatalf("valid=%v err=%v", tc.valid, err)
-			}
-		})
-	}
-}
-
 func TestStrictClaudeLinuxProductionPackageLinkContract(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux directory link semantics are verified in the bundle worktree")
 	}
 	f := newStrictClaudeLinuxFixture(t)
-	proof, handles, err := strictClaudeLinuxPackageProof(f.home, f.record.Version, os.Getuid())
+	proof, handles, err := strictClaudeLinuxPackageProof(f.home, os.Getuid(), os.Getgid())
 	if err != nil {
 		t.Fatal(err)
 	}
