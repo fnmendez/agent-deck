@@ -207,7 +207,7 @@ func (v *strictSessionAdmissionVerifier) manualBracketAuthorized(id tmux.StrictP
 	return v != nil && v.manualBracketIdentity == id && id.BracketPaste == "" && id.ServerVersion == "3.6"
 }
 
-func handleStrictSessionSend(out *CLIOutput, inst *session.Instance, expectedThread, message string) {
+func handleStrictSessionSend(out *CLIOutput, inst *session.Instance, expectedThread, message string, operatorQuiet time.Duration) {
 	result := tmux.StrictSendResult{Delivery: "refused", Reason: "target_unavailable"}
 	var sendErr error = fmt.Errorf("strict target unavailable")
 	target := inst.GetTmuxSession()
@@ -216,6 +216,7 @@ func handleStrictSessionSend(out *CLIOutput, inst *session.Instance, expectedThr
 		sendErr = fmt.Errorf("strict send is unsupported on this platform")
 	}
 	if strictToolPlatformSupported(runtime.GOOS, runtime.GOARCH, inst.Tool) && target != nil && strictThreadUUID.MatchString(expectedThread) {
+		target.StrictOperatorQuiet = operatorQuiet
 		verifier := newStrictSessionAdmissionVerifier(inst, target, expectedThread)
 		result, sendErr = target.StrictSendOnce(inst.Tool, message, verifier.callback, verifier.manualBracketAuthorized)
 	}
@@ -274,23 +275,50 @@ func runStrictAdmissionProbe(verifier *strictSessionAdmissionVerifier,
 }
 
 func printStrictProbeUsage() {
-	fmt.Println("Usage: agent-deck session strict-probe <full-session-id> [--json]")
+	fmt.Println("Usage: agent-deck session strict-probe <full-session-id> [--json] [--operator-quiet 5s-60s]")
 	fmt.Println()
 	fmt.Println("Run the strict native/idle verifier twice without staging or terminal input.")
 }
 
-func parseStrictProbeArguments(args []string) (string, bool, error) {
+func parseStrictProbeArguments(args []string) (string, bool, time.Duration, error) {
 	fs := flag.NewFlagSet("session strict-probe", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	jsonOutput := fs.Bool("json", false, "Output as JSON")
+	operatorQuiet := fs.Duration("operator-quiet", 0, "Required human-client input quiet window, 5s-60s (default 60s)")
 	if err := fs.Parse(normalizeArgs(fs, args)); err != nil {
-		return "", false, err
+		return "", false, 0, err
 	}
 	remaining := fs.Args()
 	if len(remaining) != 1 {
-		return "", false, fmt.Errorf("one full session ID is required")
+		return "", false, 0, fmt.Errorf("one full session ID is required")
 	}
-	return remaining[0], *jsonOutput, nil
+	quiet, err := strictOperatorQuietArgument(flagWasSet(fs, "operator-quiet"), *operatorQuiet, true)
+	if err != nil {
+		return "", false, 0, err
+	}
+	return remaining[0], *jsonOutput, quiet, nil
+}
+
+// strictOperatorQuietArgument validates an explicitly set --operator-quiet.
+// Unset keeps the reviewed 60s default (zero); an explicit value, including
+// 0s, must lie in [5s, 60s] and needs a strict command.
+func strictOperatorQuietArgument(set bool, value time.Duration, strict bool) (time.Duration, error) {
+	if !set {
+		return 0, nil
+	}
+	if !strict {
+		return 0, fmt.Errorf("--operator-quiet requires --strict-once")
+	}
+	if !tmux.ValidStrictOperatorQuiet(value) {
+		return 0, fmt.Errorf("--operator-quiet must be between 5s and 60s")
+	}
+	return value, nil
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
 }
 
 func loadStrictProbeRegistryTarget(profile, identifier string) (*session.Instance, error) {
@@ -316,7 +344,7 @@ func loadStrictProbeRegistryTarget(profile, identifier string) (*session.Instanc
 }
 
 func handleStrictSessionProbe(profile string, args []string) {
-	identifier, jsonOutput, parseErr := parseStrictProbeArguments(args)
+	identifier, jsonOutput, operatorQuiet, parseErr := parseStrictProbeArguments(args)
 	if errors.Is(parseErr, flag.ErrHelp) {
 		printStrictProbeUsage()
 		return
@@ -340,6 +368,7 @@ func handleStrictSessionProbe(profile string, args []string) {
 		out.Error("strict probe target unavailable", ErrCodeInvalidOperation)
 		os.Exit(1)
 	}
+	target.StrictOperatorQuiet = operatorQuiet
 	verifier := newStrictSessionAdmissionVerifier(inst, target, "")
 	observations, probeErr := runStrictAdmissionProbe(verifier, func() (tmux.StrictPaneIdentity, error) {
 		return target.StrictProbeIdentity(inst.Tool)

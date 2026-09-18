@@ -93,7 +93,7 @@ func strictFrameThroughCapture(s strictSnapshot, version string) func(string) (s
 		return nil, errors.New("unexpected fixture probe")
 	}
 	return func(pinned string) (strictSnapshot, error) {
-		return captureStrictSnapshot("agentdeck_director-claude_0c7acab5", pinned, read, func(string) bool { return true })
+		return captureStrictSnapshot("agentdeck_director-claude_0c7acab5", pinned, 0, read, func(string) bool { return true })
 	}
 }
 

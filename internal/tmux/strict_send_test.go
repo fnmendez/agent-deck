@@ -266,7 +266,7 @@ func TestStrictProbeIdentityExecutesOnlyReadCommands(t *testing.T) {
 		}
 	}
 	identity, err := strictProbeIdentity("claude", func(pinned string) (strictSnapshot, error) {
-		return captureStrictSnapshot("target", pinned, read, func(string) bool { return true })
+		return captureStrictSnapshot("target", pinned, 0, read, func(string) bool { return true })
 	})
 	if err != nil || identity.PaneID != "%2" || identity.PID != "123" {
 		t.Fatalf("identity=%+v err=%v", identity, err)
@@ -347,7 +347,7 @@ func TestStrictSnapshotRequiresStableLiveRawPane(t *testing.T) {
 				}
 				return []byte(meta), nil
 			}
-			got, err := captureStrictSnapshot("target", "%2", read, func(string) bool { return !tc.cooked })
+			got, err := captureStrictSnapshot("target", "%2", 0, read, func(string) bool { return !tc.cooked })
 			if tc.name == "valid" {
 				if err != nil || got.identity.CWD != "/project" {
 					t.Fatalf("snapshot=%+v err=%v", got, err)
@@ -373,7 +373,7 @@ func TestStrictTmux36LiveMetadataShapeIsCompatibilityCandidate(t *testing.T) {
 			return nil, fmt.Errorf("unexpected command %q", args[0])
 		}
 	}
-	snapshot, err := captureStrictSnapshot("agentdeck_causalert-main_cabf0cf6", "", read, func(string) bool { return true })
+	snapshot, err := captureStrictSnapshot("agentdeck_causalert-main_cabf0cf6", "", 0, read, func(string) bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +399,7 @@ func TestStrictTmux36Claude268LiveComposerProbeShape(t *testing.T) {
 		return nil, errors.New("unexpected command")
 	}
 	identity, err := strictProbeIdentity("claude", func(pinned string) (strictSnapshot, error) {
-		return captureStrictSnapshot("agentdeck_causalert-main_cabf0cf6", pinned, read, func(string) bool { return true })
+		return captureStrictSnapshot("agentdeck_causalert-main_cabf0cf6", pinned, 0, read, func(string) bool { return true })
 	})
 	if err != nil || identity.ServerVersion != "3.6" || identity.BracketPaste != "" || identity.PID != "2959037" {
 		t.Fatalf("live Claude 2.1.268 probe shape refused: identity=%+v err=%v", identity, err)
@@ -436,7 +436,7 @@ func TestStrictTmux36UnknownBracketRequiresExactStableVersion(t *testing.T) {
 				}
 				return nil, errors.New("unexpected command")
 			}
-			if _, err := captureStrictSnapshot("agentdeck_causalert-main_cabf0cf6", "", read, func(string) bool { return true }); err == nil {
+			if _, err := captureStrictSnapshot("agentdeck_causalert-main_cabf0cf6", "", 0, read, func(string) bool { return true }); err == nil {
 				t.Fatal("unknown or unstable bracket state admitted")
 			}
 		})
@@ -563,7 +563,7 @@ func TestStrictOperatorClientGuard(t *testing.T) {
 		{"0|999\n", false}, {"0|1001\n", false}, {"0|0\n", false}, {"0|unknown\n", false},
 		{"unknown|0\n", false}, {"malformed\n", false}, {"1|1000\n0|999\n", false},
 	} {
-		if got := strictOperatorIdle(tc.clients, now); got != tc.idle {
+		if got := strictOperatorState(tc.clients, now, StrictOperatorQuietDefault) == strictOperatorQuiet; got != tc.idle {
 			t.Fatalf("clients %q got %v", tc.clients, got)
 		}
 	}
@@ -782,7 +782,7 @@ func TestStrictCodexGeometryBeforeStagingThroughCapture(t *testing.T) {
 			}
 			result, err := strictSendOnce("codex", "synthetic prompt", func(StrictPaneIdentity) error { return nil }, strictOps{
 				snapshot: func(pinned string) (strictSnapshot, error) {
-					return captureStrictSnapshot("fixture", pinned, read, func(string) bool { return true })
+					return captureStrictSnapshot("fixture", pinned, 0, read, func(string) bool { return true })
 				},
 				stage: func(string) (string, error) { stages++; return "private-fixture", nil }, drop: func(string) { drops++ },
 				submit: func(string, string) error { submits++; return nil },
@@ -815,5 +815,88 @@ func TestStrictCodexGeometryChangeAfterStagingNeverSubmits(t *testing.T) {
 	})
 	if err == nil || result.Attempted || stages != 1 || drops != 1 || submits != 0 {
 		t.Fatalf("geometry transition admitted: %+v err=%v stages=%d drops=%d submits=%d", result, err, stages, drops, submits)
+	}
+}
+
+func TestStrictOperatorQuietWindowIsBounded(t *testing.T) {
+	for _, tc := range []struct{ in, want time.Duration }{
+		{0, StrictOperatorQuietDefault}, {-5 * time.Second, StrictOperatorQuietDefault},
+		{4 * time.Second, StrictOperatorQuietDefault}, {5 * time.Second, 5 * time.Second},
+		{30 * time.Second, 30 * time.Second}, {60 * time.Second, 60 * time.Second},
+		{61 * time.Second, StrictOperatorQuietDefault}, {time.Hour, StrictOperatorQuietDefault},
+	} {
+		if got := strictOperatorQuietWindow(tc.in); got != tc.want {
+			t.Fatalf("window(%v)=%v want %v", tc.in, got, tc.want)
+		}
+	}
+	now := time.Unix(1000, 0)
+	for _, tc := range []struct {
+		clients string
+		window  time.Duration
+		want    strictOperatorActivity
+	}{
+		{"0|990\n", 5 * time.Second, strictOperatorQuiet},
+		{"0|996\n", 5 * time.Second, strictOperatorRecent},
+		{"0|990\n", 60 * time.Second, strictOperatorRecent},
+		{"1|1000\n0|990\n", 5 * time.Second, strictOperatorQuiet},
+		{"0|990\n0|999\n", 5 * time.Second, strictOperatorRecent},
+		{"0|996\nmalformed\n", 5 * time.Second, strictOperatorUnverified},
+		{"0|unknown\n", 5 * time.Second, strictOperatorUnverified},
+	} {
+		if got := strictOperatorState(tc.clients, now, tc.window); got != tc.want {
+			t.Fatalf("clients %q window %v got %v want %v", tc.clients, tc.window, got, tc.want)
+		}
+	}
+}
+
+// Mouse motion over a visible Claude tab (DECSET 1003) is client input. A short
+// explicit window admits a quiet pane, but never a draft: the composer proof is
+// independent of the window.
+func TestStrictOperatorQuietNamesActivityAndKeepsDraftProof(t *testing.T) {
+	metadata := "$1|%2|123|2|2|0|0|1|0|0|80|24|1|claude|target|@3|/project|/dev/ttys012|3.7b\n"
+	activity := fmt.Sprint(time.Now().Add(-10 * time.Second).Unix())
+	pane := strictTestPane("claude").content
+	read := func(args ...string) ([]byte, error) {
+		switch args[0] {
+		case "display-message":
+			return []byte(metadata), nil
+		case "list-clients":
+			return []byte("0|" + activity + "\n"), nil
+		case "capture-pane":
+			return []byte(pane), nil
+		}
+		return nil, fmt.Errorf("unexpected command %q", args[0])
+	}
+	probe := func(quiet time.Duration) error {
+		_, err := strictProbeIdentity("claude", func(pinned string) (strictSnapshot, error) {
+			return captureStrictSnapshot("target", pinned, quiet, read, func(string) bool { return true })
+		})
+		return err
+	}
+	var composer StrictComposerError
+	if err := probe(0); !errors.As(err, &composer) || composer.Reason != "active_client" {
+		t.Fatalf("default window admitted 10s-old input or hid the reason: %v", err)
+	}
+	if err := probe(5 * time.Second); err != nil {
+		t.Fatalf("5s window refused a pane quiet for 10s: %v", err)
+	}
+	pane = strings.Replace(pane, "❯ ", "❯ native draft", 1)
+	if err := probe(5 * time.Second); err == nil {
+		t.Fatal("short window admitted a nonempty composer")
+	}
+	result, err := strictSendOnce("claude", "hello", func(StrictPaneIdentity) error { return nil }, strictOps{
+		snapshot: func(string) (strictSnapshot, error) {
+			return strictSnapshot{}, StrictComposerError{Reason: "active_client"}
+		},
+		stage: func(string) (string, error) { t.Fatal("staged after operator activity"); return "", nil },
+	})
+	if err == nil || result.Attempted || result.Delivery != "refused" || result.Reason != "active_client" {
+		t.Fatalf("send did not refuse by name before effects: %+v %v", result, err)
+	}
+	result, _ = strictSendOnce("claude", "hello", func(StrictPaneIdentity) error { return nil }, strictOps{
+		snapshot: func(string) (strictSnapshot, error) { return strictSnapshot{}, StrictComposerError{Reason: "busy"} },
+	})
+	if result.Reason != "capture_failed" {
+		t.Fatalf("only active_client may be named from a snapshot error, got %q", result.Reason)
 	}
 }

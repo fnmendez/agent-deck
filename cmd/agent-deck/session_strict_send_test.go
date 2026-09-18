@@ -509,18 +509,29 @@ func TestStrictProbeIsRegisteredThroughSessionDispatcher(t *testing.T) {
 func TestStrictProbeArgumentsHaveNoMessageSurface(t *testing.T) {
 	identifier := "caa5b90c-1788154378"
 	for _, args := range [][]string{{identifier, "--json"}, {"--json", identifier}} {
-		got, jsonOutput, err := parseStrictProbeArguments(args)
-		if err != nil || got != identifier || !jsonOutput {
-			t.Fatalf("args=%v got=%q json=%v err=%v", args, got, jsonOutput, err)
+		got, jsonOutput, quiet, err := parseStrictProbeArguments(args)
+		if err != nil || got != identifier || !jsonOutput || quiet != 0 {
+			t.Fatalf("args=%v got=%q json=%v quiet=%v err=%v", args, got, jsonOutput, quiet, err)
+		}
+	}
+	for _, value := range []string{"5s", "30s", "60s"} {
+		want, _ := time.ParseDuration(value)
+		if _, _, quiet, err := parseStrictProbeArguments([]string{identifier, "--operator-quiet", value}); err != nil || quiet != want {
+			t.Fatalf("bounded operator-quiet %s rejected: quiet=%v err=%v", value, quiet, err)
+		}
+	}
+	for _, value := range []string{"4s", "0.5s", "61s", "10m", "-5s", "0s"} {
+		if _, _, _, err := parseStrictProbeArguments([]string{identifier, "--operator-quiet", value}); err == nil {
+			t.Fatalf("out-of-bounds operator-quiet accepted: %s", value)
 		}
 	}
 	for _, args := range [][]string{{}, {identifier, "message"}, {identifier, "--message", "text"},
 		{identifier, "--message-file", "prompt"}, {identifier, "--expected-thread", "thread"}} {
-		if _, _, err := parseStrictProbeArguments(args); err == nil {
+		if _, _, _, err := parseStrictProbeArguments(args); err == nil {
 			t.Fatalf("effect-capable or ambiguous args accepted: %v", args)
 		}
 	}
-	if _, _, err := parseStrictProbeArguments([]string{"--help"}); !errors.Is(err, flag.ErrHelp) {
+	if _, _, _, err := parseStrictProbeArguments([]string{"--help"}); !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("help result=%v", err)
 	}
 }
@@ -613,7 +624,8 @@ func TestStrictProbeReportsComposerRefusalReason(t *testing.T) {
 		{"unsafe_composer_reason", 1, 0, tmux.StrictComposerError{Reason: "pane/text leak"}, "tmux_observation_unavailable"},
 		{"untyped_composer_text", 1, 0, errors.New("strict composer unavailable: busy_or_modal"), "tmux_observation_unavailable"},
 		{"capture_failure", 1, 0, errors.New("pane changed during capture"), "tmux_observation_unavailable"},
-		{"operator_activity", 2, 1, errors.New("operator activity unverified or recent"), "tmux_observation_unavailable"},
+		{"operator_activity_unverified", 2, 1, errors.New("operator activity unverified"), "tmux_observation_unavailable"},
+		{"operator_activity_recent", 2, 1, tmux.StrictComposerError{Reason: "active_client"}, "active_client"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := strictVerifierFixture([]strictNativeThreadProof{weak, weak},
@@ -702,5 +714,42 @@ func TestStrictProbeRegistryReadsNewestWALWithoutWrites(t *testing.T) {
 	}
 	if final := fingerprintStrictRegistry(t, profileDir); !reflect.DeepEqual(final, before) {
 		t.Fatalf("refused probe registry reads changed files:\nbefore=%+v\nafter=%+v", before, final)
+	}
+}
+
+func TestStrictOperatorQuietArgumentIsBoundedAndExplicit(t *testing.T) {
+	for _, tc := range []struct {
+		set, strict bool
+		value, want time.Duration
+		ok          bool
+	}{
+		{false, true, 0, 0, true}, {false, false, 0, 0, true},
+		{true, true, 5 * time.Second, 5 * time.Second, true}, {true, true, time.Minute, time.Minute, true},
+		{true, true, 0, 0, false}, {true, true, 4 * time.Second, 0, false}, {true, true, 61 * time.Second, 0, false},
+		{true, false, 5 * time.Second, 0, false},
+	} {
+		got, err := strictOperatorQuietArgument(tc.set, tc.value, tc.strict)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Fatalf("%+v: got=%v err=%v", tc, got, err)
+		}
+	}
+}
+
+// The window is a per-invocation option: both strict entry points must hand the
+// validated value to the tmux session they observe, or the flag silently
+// degrades to the 60s default.
+func TestStrictOperatorQuietReachesTheObservedSession(t *testing.T) {
+	for _, fn := range []string{"handleStrictSessionSend", "handleStrictSessionProbe"} {
+		if body := mustExtractFuncBody(t, "session_strict_send.go", fn); !strings.Contains(body, "target.StrictOperatorQuiet = operatorQuiet") {
+			t.Fatalf("%s does not apply --operator-quiet to its target", fn)
+		}
+	}
+	send := mustExtractFuncBody(t, "session_cmd.go", "handleSessionSend")
+	for _, want := range []string{`strictOperatorQuietArgument(flagWasSet(fs, "operator-quiet"), *operatorQuiet, true)`,
+		"handleStrictSessionSend(out, inst, *expectedThread, message, quietWindow)",
+		`strictOperatorQuietArgument(flagWasSet(fs, "operator-quiet"), *operatorQuiet, false)`} {
+		if !strings.Contains(send, want) {
+			t.Fatalf("session send lost operator-quiet wiring %q", want)
+		}
 	}
 }
