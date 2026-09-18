@@ -1,0 +1,10 @@
+{
+ "source": "Claude 2.1.276 (Haiku 4.5) in a disposable session on a private tmux socket, 141x50, cursor 2,46, one background `sleep` shell. The session held no operator content. The PR form was measured on a live 2.1.274 pane and is reproduced here with a synthetic PR number and URL.",
+ "width": 141,
+ "height": 50,
+ "cursor_x": 2,
+ "cursor_y": 46,
+ "raw_hint": "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 shell\u001b[38;5;246m · ← 2 agents\u001b[39m",
+ "raw_draft_hint": "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 shell\u001b[39m",
+ "raw_pr_hint": "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · PR\u001b[39m \u001b[4m\u001b[38;5;220m\u001b]8;id=fixture;https://github.com/example/repo/pull/978\u001b\\#978\u001b[0m\u001b[38;5;246m\u001b]8;;\u001b\\ · \u001b[38;5;44m1 shell\u001b[38;5;246m · ← 2 agents\u001b[39m"
+}
