@@ -1,0 +1,343 @@
+{
+ "source": "Claude Code 2.1.277 on localserver, captured read-only with capture-pane -e (live panes) or in a disposable private tmux server (lab). Rows start at the upper composer divider. Subagent task text is replaced by synthetic text of equal length and the status row by a synthetic one; every other byte is as captured.",
+ "cases": [
+  {
+   "name": "up_arrow_token_counter",
+   "source": "live worker pane: a subagent row counting tokens with the up arrow (caused the claude_agents_panel_unverified deferrals)",
+   "width": 200,
+   "height": 50,
+   "cursor_x": 2,
+   "cursor_y": 43,
+   "top": 42,
+   "rows": [
+    "\u001b[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[38;5;246m❯ \u001b[39m",
+    "\u001b[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m (shift+tab to cycle) · ← 2 agents\u001b[39m",
+    "",
+    "\u001b[1m  ● main\u001b[0m",
+    "\u001b[38;5;246m  ◯ general-purpose\u001b[39m  \u001b[38;5;246mSynthetic fixture task text.\u001b[39m                                                                                                                                 \u001b[38;5;246m29s · ↑ 66.9k tokens\u001b[39m"
+   ],
+   "reason": ""
+  },
+  {
+   "name": "tasks_tip_cycle_form",
+   "source": "live worker pane: transient /tasks tip between the cycle label and the agents suffix",
+   "width": 200,
+   "height": 50,
+   "cursor_x": 2,
+   "cursor_y": 46,
+   "top": 45,
+   "rows": [
+    "\u001b[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[38;5;246m❯ \u001b[39m",
+    "\u001b[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m (shift+tab to cycle) · /tasks to see subagents · ← 2 agents\u001b[39m"
+   ],
+   "reason": ""
+  },
+  {
+   "name": "monitor_segment_with_panel",
+   "source": "live main pane: a running Monitor replaces the cycle label, one subagent listed",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 58,
+   "top": 57,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 monitor\u001b[38;5;246m · ← 2 agents\u001b[39m",
+    "",
+    "\u001b[1m  ● main\u001b[0m",
+    "\u001b[38;5;246m  ◯ general-purpose\u001b[39m  \u001b[38;5;246mSynthetic fixture task text for the agents p\u001b[39m                                                 \u001b[38;5;246m39m 15s · ↓ 414.1k tokens\u001b[39m"
+   ],
+   "reason": ""
+  },
+  {
+   "name": "two_subagents_panel",
+   "source": "live director pane: two running subagents under the cycle-form hint",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 57,
+   "top": 56,
+   "rows": [
+    "\u001b[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fixture-session-name ─",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 shell\u001b[38;5;246m · ← 2 agents\u001b[39m",
+    "",
+    "\u001b[1m  ● main\u001b[0m",
+    "\u001b[38;5;246m  ◯ general-purpose\u001b[39m  \u001b[38;5;246mSynthetic fixture task text for the a\u001b[39m                                                         \u001b[38;5;246m3m 32s · ↓ 114.9k tokens\u001b[39m",
+    "\u001b[38;5;246m  ◯ general-purpose\u001b[39m  \u001b[38;5;246mSynthetic fixture task text for the agents pa\u001b[39m                                                  \u001b[38;5;246m3m 18s · ↓ 90.4k tokens\u001b[39m"
+   ],
+   "reason": ""
+  },
+  {
+   "name": "shell_segment_tasks_tip_panel",
+   "source": "disposable lab: one shell plus the /tasks tip, one subagent listed",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 58,
+   "top": 57,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 shell\u001b[38;5;246m · /tasks to see subagents · ← 2 agents\u001b[39m",
+    "",
+    "\u001b[1m  ● main\u001b[0m",
+    "\u001b[38;5;246m  ◯ general-purpose\u001b[39m  \u001b[38;5;246mSynthetic fixture task text\u001b[39m                                                                        \u001b[38;5;246m7s · ↓ 31.6k tokens\u001b[39m"
+   ],
+   "reason": ""
+  },
+  {
+   "name": "monitor_segment_tasks_tip",
+   "source": "disposable lab: one monitor plus the /tasks tip, no panel",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 61,
+   "top": 60,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 monitor\u001b[38;5;246m · /tasks to see subagents · ← 2 agents\u001b[39m"
+   ],
+   "reason": ""
+  },
+  {
+   "name": "shell_and_monitor_segment",
+   "source": "disposable lab: one shell and one monitor share the segment",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 61,
+   "top": 60,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 shell, 1 monitor\u001b[38;5;246m · ← 2 agents\u001b[39m"
+   ],
+   "reason": ""
+  },
+  {
+   "name": "cycle_form_panel",
+   "source": "disposable lab: cycle-form hint with one running subagent",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 58,
+   "top": 57,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m (shift+tab to cycle) · ← 2 agents\u001b[39m",
+    "",
+    "\u001b[1m  ● main\u001b[0m",
+    "\u001b[38;5;246m  ◯ general-purpose\u001b[39m  \u001b[38;5;246mSynthetic fixture task text for.\u001b[39m                                                                  \u001b[38;5;246m48s · ↓ 27.3k tokens\u001b[39m"
+   ],
+   "reason": ""
+  },
+  {
+   "name": "draft_space_home_monitor",
+   "source": "disposable lab: a one-space draft after Home keeps the cursor at column 2 but drops the suffix",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 61,
+   "top": 60,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 monitor\u001b[39m"
+   ],
+   "reason": "claude_empty_hint_unverified"
+  },
+  {
+   "name": "draft_char_monitor",
+   "source": "disposable lab: a one-character draft moves the cursor and drops the suffix",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 3,
+   "cursor_y": 61,
+   "top": 60,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ x",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 monitor\u001b[39m"
+   ],
+   "reason": "composer_not_empty_or_cursor_misplaced"
+  },
+  {
+   "name": "draft_space_home_shell_and_monitor",
+   "source": "disposable lab: space then Home under the shell-and-monitor segment",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 61,
+   "top": 60,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 shell, 1 monitor\u001b[39m"
+   ],
+   "reason": "claude_empty_hint_unverified"
+  },
+  {
+   "name": "draft_space_home_cycle_panel",
+   "source": "disposable lab: space then Home while the agents panel is shown",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 58,
+   "top": 57,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m (shift+tab to cycle)\u001b[39m",
+    "",
+    "\u001b[1m  ● main\u001b[0m",
+    "\u001b[38;5;246m  ◯ general-purpose\u001b[39m  \u001b[38;5;246mSynthetic fixture task text for.\u001b[39m                                                                  \u001b[38;5;246m50s · ↓ 27.3k tokens\u001b[39m"
+   ],
+   "reason": "claude_empty_hint_unverified"
+  },
+  {
+   "name": "focus_footer_pill",
+   "source": "disposable lab: Down from the empty composer focuses the shell pill; cursor leaves the composer",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 0,
+   "cursor_y": 64,
+   "top": 57,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[7m\u001b[38;5;44m1 shell\u001b[0m\u001b[38;5;246m · /tasks to see subagents\u001b[39m",
+    "",
+    "\u001b[1m  ● main\u001b[0m",
+    "\u001b[38;5;246m  ◯ general-purpose\u001b[39m  \u001b[38;5;246mSynthetic fixture task text\u001b[39m                                                                        \u001b[38;5;246m7s · ↓ 31.6k tokens\u001b[39m"
+   ],
+   "reason": "composer_not_empty_or_cursor_misplaced"
+  },
+  {
+   "name": "focus_panel_main",
+   "source": "disposable lab: second Down focuses the panel main row",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 0,
+   "cursor_y": 64,
+   "top": 57,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;246m↑/↓ to select · Enter to view\u001b[39m",
+    "",
+    "\u001b[1m❯ ● main\u001b[0m",
+    "\u001b[38;5;246m  ◯ general-purpose\u001b[39m  \u001b[38;5;246mSynthetic fixture task text\u001b[39m                                                                        \u001b[38;5;246m7s · ↓ 31.6k tokens\u001b[39m"
+   ],
+   "reason": "composer_not_empty_or_cursor_misplaced"
+  },
+  {
+   "name": "focus_panel_subagent",
+   "source": "disposable lab: third Down selects the subagent row",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 0,
+   "cursor_y": 64,
+   "top": 57,
+   "rows": [
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;246mEnter to view · x to stop\u001b[39m",
+    "",
+    "\u001b[1m  ● main\u001b[0m",
+    "❯ ◯ general-purpose  Synthetic fixture task text                                                                        7s · ↓ 31.6k tokens"
+   ],
+   "reason": "composer_not_empty_or_cursor_misplaced"
+  },
+  {
+   "name": "left_arrow_background_dialog",
+   "source": "disposable lab: Left from the empty composer opens the background-session dialog",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 26,
+   "top": 22,
+   "rows": [
+    "\u001b[38;5;153m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "\u001b[39m  \u001b[1m\u001b[38;5;153mBackground this session?\u001b[0m",
+    "  \u001b[38;5;246m1 shell running — they will be stopped.\u001b[39m",
+    "",
+    "  \u001b[38;5;153m❯\u001b[39m \u001b[38;5;246m1. \u001b[38;5;153mBackground anyway (tasks will be stopped)\u001b[39m",
+    "    \u001b[38;5;246m2. \u001b[39mStay",
+    "",
+    "  \u001b[3m\u001b[38;5;246mEnter to confirm · Esc to cancel\u001b[0m",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "reason": "composer_not_empty_or_cursor_misplaced"
+  }
+ ]
+}

@@ -18,17 +18,28 @@ func strictClaudeNBSPPrompt(line string) bool {
 // suffix, including after Home. Never substitute a substring or mode-only check.
 const strictClaudeEmptyBypassHint = "⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents" // #nosec G101 -- Public Claude UI label, not a credential.
 
-var strictClaudeAgentsBypassHint = regexp.MustCompile(`^⏵⏵ bypass permissions on \(shift\+tab to cycle\)( · PR #[1-9][0-9]{0,5})? · ← ([1-9]|[1-9][0-9]) agents$`)
+// Claude 2.1.277 can show a transient "/tasks to see subagents" tip right
+// before the agents suffix while subagents run. Measured on 2.1.277: a draft of
+// a space, a space then Home, or any character drops the tip together with the
+// complete agents suffix, so the suffix stays the empty-input authority.
+const strictClaudeTasksTip = `(?: · /tasks to see subagents)?`
+
+var strictClaudeAgentsBypassHint = regexp.MustCompile(`^⏵⏵ bypass permissions on \(shift\+tab to cycle\)( · PR #[1-9][0-9]{0,5})?` +
+	strictClaudeTasksTip + ` · ← ([1-9]|[1-9][0-9]) agents$`)
 
 // Claude 2.1.274-2.1.276 drop "(shift+tab to cycle)" while background shells
 // run and show " · N shell(s)" before the agents suffix, after an optional PR
 // segment (an OSC 8 hyperlink that StripANSI removes). Measured on 2.1.276: a
 // draft of spaces, spaces then Home, or any character drops the complete agents
 // suffix exactly as in the 2.1.260 layout, so that suffix remains the
-// empty-input authority. The shell segment is mandatory in this form; without
-// it the cycle label is present and the forms above apply.
+// empty-input authority. Claude 2.1.277 renders a running Monitor the same way
+// (" · N monitor(s)", or " · N shell(s), N monitor(s)" when both run), and
+// measured drafts drop the suffix there too. The background segment is
+// mandatory in this form; without it the cycle label is present and the forms
+// above apply.
 var strictClaudeShellBypassHint = regexp.MustCompile(`^⏵⏵ bypass permissions on( · PR #[1-9][0-9]{0,5})? · ` +
-	`(?:1 shell|(?:[2-9]|[1-9][0-9]) shells) · ← (?:for agents|(?:[1-9]|[1-9][0-9]) agents)$`)
+	`(?:(?:1 shell|(?:[2-9]|[1-9][0-9]) shells)(?:, (?:1 monitor|(?:[2-9]|[1-9][0-9]) monitors))?|1 monitor|(?:[2-9]|[1-9][0-9]) monitors)` +
+	strictClaudeTasksTip + ` · ← (?:for agents|(?:[1-9]|[1-9][0-9]) agents)$`)
 
 func strictClaudeEmptyBypassHintValid(line string) bool {
 	return line == strictClaudeEmptyBypassHint || strictClaudeAgentsBypassHint.MatchString(line) ||
@@ -125,6 +136,15 @@ func strictClaudeLiveRegionStart(s strictSnapshot, rawLines, lines []string) int
 // the panel is checked on its own under any valid hint. It is navigation
 // display data, never input authority: the cursor must still sit on the empty
 // main composer and the native record must still prove the main thread idle.
+// The token counter's arrow is ↓ while the subagent streams output and ↑ while
+// its prompt is being sent (measured on 2.1.277); both are display data.
+// Focus is measured on 2.1.277: Down from the empty composer walks the footer
+// pill, then the panel's main row, then each subagent row. Every focused state
+// moves the terminal cursor off the composer (to column 0 of the last row),
+// replaces the hint with navigation help ("↑/↓ to select · Enter to view",
+// "Enter to view · x to stop") and draws a ❯ pointer on the selected row, so a
+// focused panel fails the cursor, hint and row checks independently. Left
+// opens a background-session dialog instead, which the modal check refuses.
 // Every row must carry exactly the measured UNFOCUSED styling, so a focused or
 // selected panel, a finished or failed agent glyph, or any other shape is
 // refused. Only rows that show the panel's main row are refused as the panel,
@@ -136,7 +156,7 @@ const strictClaudeAgentsPanelMaxAgents = 32
 
 var strictClaudeAgentsPanelRow = regexp.MustCompile(`^\x1b\[38;5;246m  ◯ [A-Za-z0-9][A-Za-z0-9_.:-]{0,63}\x1b\[39m  ` +
 	`\x1b\[38;5;246m[^\x1b]{1,512}\x1b\[39m +` +
-	`\x1b\[38;5;246m(?:(?:[1-9]|1[0-9]|2[0-3])h )?(?:[1-5]?[0-9]m )?[1-5]?[0-9]s · ↓ (?:[1-9][0-9]{0,2}|[1-9][0-9]{0,2}(?:\.[0-9])?k) tokens\x1b\[39m$`)
+	`\x1b\[38;5;246m(?:(?:[1-9]|1[0-9]|2[0-3])h )?(?:[1-5]?[0-9]m )?[1-5]?[0-9]s · [↑↓] (?:[1-9][0-9]{0,2}|[1-9][0-9]{0,2}(?:\.[0-9])?k) tokens\x1b\[39m$`)
 
 func strictClaudeAgentsPanel(rawRows, rows []string) string {
 	shown := false
