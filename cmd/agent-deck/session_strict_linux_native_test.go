@@ -871,3 +871,29 @@ func TestStrictLinuxExecutableGrammarIsMeasuredAndClosed(t *testing.T) {
 		}
 	}
 }
+
+// The measured between-turn record shape passes the closed decoder and the full
+// Linux thread proof, then admits through the hookless native idle authority.
+func TestStrictClaudeLinuxHooklessShellRecordAdmits(t *testing.T) {
+	for _, status := range []string{"shell", "busy"} {
+		t.Run(status, func(t *testing.T) {
+			f := newStrictClaudeLinuxFixture(t)
+			f.record.Status = status
+			f.writeRecord(t)
+			v, _ := strictClaudeLinuxFixtureVerifier(f)
+			v.deps.idle = func(string, string, string, session.StrictSendIdleEvidence) session.StrictSendIdleDecision {
+				return session.StrictSendIdleDecision{Reason: "hook_unavailable"}
+			}
+			observed, err := v.verify(f.id)
+			if status == "busy" {
+				if err == nil {
+					t.Fatal("busy record admitted")
+				}
+				return
+			}
+			if err != nil || observed.IdleDecision.Reason != "native_idle_without_hook" {
+				t.Fatalf("shell record observed=%+v err=%v", observed, err)
+			}
+		})
+	}
+}

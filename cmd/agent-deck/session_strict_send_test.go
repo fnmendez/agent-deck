@@ -268,6 +268,42 @@ func TestStrictLinuxHooklessNativeIdleAdmission(t *testing.T) {
 	}
 }
 
+// Measured on Claude 2.1.276 (Linux, 2026-09-18): the record reads "busy" for a
+// whole turn even while a background Bash task is alive, "shell" once that turn
+// ends with the task still running, and "idle" again after the task exits.
+func TestStrictLinuxHooklessNativeShellStatusAdmission(t *testing.T) {
+	proof := strictHooklessLinuxProof("shell", 100101000, true)
+	if !strictLinuxNativeIdleAdmission("linux", "amd64", "claude", proof.Claude, time.Now()) {
+		t.Fatal("measured between-turn shell status refused")
+	}
+	v := strictVerifierFixture([]strictNativeThreadProof{proof, proof},
+		func(int, session.StrictSendIdleEvidence) session.StrictSendIdleDecision {
+			return session.StrictSendIdleDecision{Reason: "hook_unavailable"}
+		})
+	v.platform, v.architecture = "linux", "amd64"
+	observations, err := runStrictAdmissionProbe(v, strictFixedProbeObservation(strictVerifiedPaneIdentity()))
+	if err != nil || observations[1].IdleDecision.Reason != "native_idle_without_hook" {
+		t.Fatalf("hookless native shell result=%+v err=%v", observations, err)
+	}
+}
+
+func TestStrictLinuxHooklessAdmissionRejectsShellIdleTransition(t *testing.T) {
+	for _, pair := range [][2]string{{"idle", "shell"}, {"shell", "idle"}, {"shell", "busy"}} {
+		t.Run(pair[0]+"_to_"+pair[1], func(t *testing.T) {
+			first := strictHooklessLinuxProof(pair[0], 100101000, true)
+			second := strictHooklessLinuxProof(pair[1], 100101000, true)
+			v := strictVerifierFixture([]strictNativeThreadProof{first, second},
+				func(int, session.StrictSendIdleEvidence) session.StrictSendIdleDecision {
+					return session.StrictSendIdleDecision{Reason: "hook_unavailable"}
+				})
+			v.platform, v.architecture = "linux", "amd64"
+			if _, err := runStrictAdmissionProbe(v, strictFixedProbeObservation(strictVerifiedPaneIdentity())); err == nil {
+				t.Fatal("status transition between passes admitted")
+			}
+		})
+	}
+}
+
 func TestStrictLinuxHooklessAdmissionRejectsMissingInvalidBusyAndWeakEvidence(t *testing.T) {
 	now := time.Now()
 	valid := strictHooklessLinuxProof("idle", 100101000, true).Claude
@@ -276,7 +312,16 @@ func TestStrictLinuxHooklessAdmissionRejectsMissingInvalidBusyAndWeakEvidence(t 
 		proof                                          strictClaudeNativeProof
 	}{
 		{"missing_status", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatus = ""; return p }()},
-		{"busy", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatus = "running"; return p }()},
+		{"running", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatus = "running"; return p }()},
+		{"busy", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatus = "busy"; return p }()},
+		{"waiting", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatus = "waiting"; return p }()},
+		{"shell_case", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatus = "Shell"; return p }()},
+		{"shell_padded", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatus = "shell "; return p }()},
+		{"shell_unstable", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof {
+			p := valid
+			p.NativeStatus, p.NativeStatusStable = "shell", false
+			return p
+		}()},
 		{"unstable", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatusStable = false; return p }()},
 		{"missing_timestamp", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof { p := valid; p.NativeStatusUpdatedAt = 0; return p }()},
 		{"before_start", "linux", "amd64", "claude", "hook_unavailable", func() strictClaudeNativeProof {

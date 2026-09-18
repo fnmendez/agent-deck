@@ -386,9 +386,16 @@ func strictBracketPasteAdmission(platform, architecture, tool string, id tmux.St
 		tool == "claude" && durableNative
 }
 
+// strictLinuxClaudeIdleStatuses are the native record statuses written only
+// between turns. Claude derives "shell" from "idle" alone, when a background
+// Bash task outlives the finished turn; a turn in progress stays "busy" even
+// with that task alive. That task's exit starts an automatic turn, which can
+// race the paste like any other idle wakeup; Claude then queues the input.
+var strictLinuxClaudeIdleStatuses = map[string]bool{"idle": true, "shell": true}
+
 func strictLinuxNativeIdleAdmission(platform, architecture, tool string, proof strictClaudeNativeProof, now time.Time) bool {
 	if platform != "linux" || architecture != "amd64" || tool != "claude" || !proof.DurableStop ||
-		proof.Signature == "" || !proof.NativeStatusStable || proof.NativeStatus != "idle" ||
+		proof.Signature == "" || !proof.NativeStatusStable || !strictLinuxClaudeIdleStatuses[proof.NativeStatus] ||
 		proof.NativeStartedAt <= 0 || proof.NativeStatusUpdatedAt < proof.NativeStartedAt {
 		return false
 	}
