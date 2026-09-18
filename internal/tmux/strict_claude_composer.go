@@ -107,7 +107,63 @@ func strictClaudeLiveRegionStart(s strictSnapshot, rawLines, lines []string) int
 	return turn
 }
 
-func strictClaudeBypassComposer(s strictSnapshot, lines []string) string {
+// Claude 2.1.274 lists running in-process agents under the bypass hint: one
+// blank row, the bold row of the main thread it is showing, then one dim row
+// per running subagent (name, its current task, elapsed time and tokens). The
+// hint's own count is unrelated (it counts other sessions that need input), so
+// the panel is checked on its own under any valid hint. It is navigation
+// display data, never input authority: the cursor must still sit on the empty
+// main composer and the native record must still prove the main thread idle.
+// Every row must carry exactly the measured UNFOCUSED styling, so a focused or
+// selected panel, a finished or failed agent glyph, or any other shape is
+// refused. Only rows that show the panel's main row are refused as the panel,
+// which names a condition that ends when the agents finish; anything else
+// under the hint stays claude_empty_hint_unverified.
+const strictClaudeAgentsPanelMain = "\x1b[1m  ● main\x1b[0m"
+
+const strictClaudeAgentsPanelMaxAgents = 32
+
+var strictClaudeAgentsPanelRow = regexp.MustCompile(`^\x1b\[38;5;246m  ◯ [A-Za-z0-9][A-Za-z0-9_.:-]{0,63}\x1b\[39m  ` +
+	`\x1b\[38;5;246m[^\x1b]{1,512}\x1b\[39m +` +
+	`\x1b\[38;5;246m(?:(?:[1-9]|1[0-9]|2[0-3])h )?(?:[1-5]?[0-9]m )?[1-5]?[0-9]s · ↓ (?:[1-9][0-9]{0,2}|[1-9][0-9]{0,2}(?:\.[0-9])?k) tokens\x1b\[39m$`)
+
+func strictClaudeAgentsPanel(rawRows, rows []string) string {
+	shown := false
+	for _, row := range rows {
+		if strings.Contains(row, "● main") {
+			shown = true
+			break
+		}
+	}
+	if !shown || len(rawRows) != len(rows) {
+		return "claude_empty_hint_unverified"
+	}
+	if len(rows) < 3 || strings.Trim(rows[0], " ") != "" ||
+		strings.TrimRight(rawRows[1], " ") != strictClaudeAgentsPanelMain {
+		return "claude_agents_panel_unverified"
+	}
+	agents := 0
+	for i := 2; i < len(rows); i++ {
+		if strings.Trim(rows[i], " ") == "" {
+			for _, rest := range rows[i:] {
+				if strings.Trim(rest, " ") != "" {
+					return "claude_agents_panel_unverified"
+				}
+			}
+			break
+		}
+		if !strictClaudeAgentsPanelRow.MatchString(strings.TrimRight(rawRows[i], " ")) {
+			return "claude_agents_panel_unverified"
+		}
+		agents++
+	}
+	if agents < 1 || agents > strictClaudeAgentsPanelMaxAgents {
+		return "claude_agents_panel_unverified"
+	}
+	return ""
+}
+
+func strictClaudeBypassComposer(s strictSnapshot, rawLines, lines []string) string {
 	if s.width <= s.x || s.height <= 0 || len(lines) != s.height || s.x != 2 || s.y < 1 || s.y+3 >= len(lines) {
 		return "composer_geometry_unverified"
 	}
@@ -125,7 +181,10 @@ func strictClaudeBypassComposer(s strictSnapshot, lines []string) string {
 	}
 	for _, row := range lines[s.y+4:] {
 		if strings.Trim(row, " ") != "" {
-			return "claude_empty_hint_unverified"
+			if len(rawLines) != len(lines) {
+				return "claude_empty_hint_unverified"
+			}
+			return strictClaudeAgentsPanel(rawLines[s.y+4:], lines[s.y+4:])
 		}
 	}
 	return ""

@@ -303,7 +303,7 @@ func strictEmptyComposer(tool string, s strictSnapshot) string {
 		}
 	}
 	if claudeNBSP {
-		return strictClaudeBypassComposer(s, lines)
+		return strictClaudeBypassComposer(s, rawLines, lines)
 	}
 	if tool == "claude" {
 		if s.y < 1 || s.y+1 >= len(lines) || !strictDivider(lines[s.y-1]) || !strictDivider(lines[s.y+1]) {

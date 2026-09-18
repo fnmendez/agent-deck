@@ -1,0 +1,13 @@
+{
+ "source": "Claude 2.1.274 on localserver, 141x65 pane, cursor 2,58, one running general-purpose subagent. The subagent task text is private and replaced by a synthetic phrase; glyphs, SGR, spacing, the two-cell right margin and the duration/token formats are byte-exact.",
+ "width": 141,
+ "height": 65,
+ "cursor_x": 2,
+ "cursor_y": 58,
+ "raw_hint": "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m (shift+tab to cycle) · ← 2 agents\u001b[39m",
+ "raw_panel": [
+  "",
+  "\u001b[1m  ● main\u001b[0m",
+  "\u001b[38;5;246m  ◯ general-purpose\u001b[39m  \u001b[38;5;246mReading the fixture harness in the synthetic example module\u001b[39m                                    \u001b[38;5;246m2m 14s · ↓ 81.6k tokens\u001b[39m"
+ ]
+}
