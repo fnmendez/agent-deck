@@ -80,6 +80,26 @@
    "reason": ""
   },
   {
+   "name": "nested_subagent_count",
+   "source": "live director pane: a subagent that launched its own subagent shows (+1) after its name",
+   "width": 141,
+   "height": 65,
+   "cursor_x": 2,
+   "cursor_y": 58,
+   "top": 57,
+   "rows": [
+    "\u001b[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── fixture-session-name ─",
+    "\u001b[39m❯ ",
+    "\u001b[38;5;244m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  fixture · Opus 5 · high ██░░░░░░░░ 22%",
+    "  \u001b[38;5;211m⏵⏵ bypass permissions on\u001b[38;5;246m · \u001b[38;5;44m1 shell\u001b[38;5;246m · ← 2 agents\u001b[39m",
+    "",
+    "\u001b[1m  ● main\u001b[0m",
+    "\u001b[38;5;246m  ◯ general-purpose (+1)\u001b[39m  \u001b[38;5;246mSynthetic fixture task text for the agents panel rows\u001b[39m                               \u001b[38;5;246m11m 35s · ↓ 137.8k tokens\u001b[39m"
+   ],
+   "reason": ""
+  },
+  {
    "name": "shell_segment_tasks_tip_panel",
    "source": "disposable lab: one shell plus the /tasks tip, one subagent listed",
    "width": 141,
@@ -155,7 +175,7 @@
   },
   {
    "name": "draft_space_home_monitor",
-   "source": "disposable lab: a one-space draft after Home keeps the cursor at column 2 but drops the suffix",
+   "source": "disposable lab: from monitor_segment_tasks_tip, a one-space draft after Home keeps the cursor at column 2 but drops the tip and the suffix",
    "width": 141,
    "height": 65,
    "cursor_x": 2,
@@ -172,7 +192,7 @@
   },
   {
    "name": "draft_char_monitor",
-   "source": "disposable lab: a one-character draft moves the cursor and drops the suffix",
+   "source": "disposable lab: from monitor_segment_tasks_tip, a one-character draft moves the cursor and drops the tip and the suffix",
    "width": 141,
    "height": 65,
    "cursor_x": 3,
