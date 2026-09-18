@@ -20,8 +20,19 @@ const strictClaudeEmptyBypassHint = "⏵⏵ bypass permissions on (shift+tab to 
 
 var strictClaudeAgentsBypassHint = regexp.MustCompile(`^⏵⏵ bypass permissions on \(shift\+tab to cycle\)( · PR #[1-9][0-9]{0,5})? · ← ([1-9]|[1-9][0-9]) agents$`)
 
+// Claude 2.1.274-2.1.276 drop "(shift+tab to cycle)" while background shells
+// run and show " · N shell(s)" before the agents suffix, after an optional PR
+// segment (an OSC 8 hyperlink that StripANSI removes). Measured on 2.1.276: a
+// draft of spaces, spaces then Home, or any character drops the complete agents
+// suffix exactly as in the 2.1.260 layout, so that suffix remains the
+// empty-input authority. The shell segment is mandatory in this form; without
+// it the cycle label is present and the forms above apply.
+var strictClaudeShellBypassHint = regexp.MustCompile(`^⏵⏵ bypass permissions on( · PR #[1-9][0-9]{0,5})? · ` +
+	`(?:1 shell|(?:[2-9]|[1-9][0-9]) shells) · ← (?:for agents|(?:[1-9]|[1-9][0-9]) agents)$`)
+
 func strictClaudeEmptyBypassHintValid(line string) bool {
-	return line == strictClaudeEmptyBypassHint || strictClaudeAgentsBypassHint.MatchString(line)
+	return line == strictClaudeEmptyBypassHint || strictClaudeAgentsBypassHint.MatchString(line) ||
+		strictClaudeShellBypassHint.MatchString(line)
 }
 
 // Claude 2.1.263-2.1.269 add one contextual idle-return tip after
