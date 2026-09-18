@@ -71,8 +71,8 @@ const (
 
 func TestStrictClaudeMeasuredPanelShapes(t *testing.T) {
 	shapes := loadStrictClaudePanelShapes(t)
-	if len(shapes) != 16 {
-		t.Fatalf("fixture has %d shapes, want 16", len(shapes))
+	if len(shapes) != 17 {
+		t.Fatalf("fixture has %d shapes, want 17", len(shapes))
 	}
 	for _, shape := range shapes {
 		t.Run(shape.Name, func(t *testing.T) {
@@ -118,6 +118,8 @@ func TestStrictClaudePanelShapesRefuseWiderVariants(t *testing.T) {
 	monitorHint := monitor.Rows[strictClaudeShapeHintRow]
 	both := shapes["shell_and_monitor_segment"]
 	bothHint := both.Rows[strictClaudeShapeHintRow]
+	nested := shapes["nested_subagent_count"]
+	nestedRow := nested.Rows[strictClaudeShapePanel+1]
 	tasks := shapes["tasks_tip_cycle_form"]
 	tasksHint := tasks.Rows[strictClaudeShapeHintRow]
 	if !strings.Contains(upRow, " · ↑ ") || !strings.Contains(monitorHint, "1 monitor") ||
@@ -132,6 +134,9 @@ func TestStrictClaudePanelShapesRefuseWiderVariants(t *testing.T) {
 		{"arrow_right", up.withRow(strictClaudeShapePanel+1, strings.Replace(upRow, " · ↑ ", " · → ", 1)), "claude_agents_panel_unverified"},
 		{"arrow_both", up.withRow(strictClaudeShapePanel+1, strings.Replace(upRow, " · ↑ ", " · ↑↓ ", 1)), "claude_agents_panel_unverified"},
 		{"arrow_missing", up.withRow(strictClaudeShapePanel+1, strings.Replace(upRow, " · ↑ ", " · ", 1)), "claude_agents_panel_unverified"},
+		{"nested_zero", nested.withRow(strictClaudeShapePanel+1, strings.Replace(nestedRow, " (+1)", " (+0)", 1)), "claude_agents_panel_unverified"},
+		{"nested_no_plus", nested.withRow(strictClaudeShapePanel+1, strings.Replace(nestedRow, " (+1)", " (1)", 1)), "claude_agents_panel_unverified"},
+		{"nested_free_text", nested.withRow(strictClaudeShapePanel+1, strings.Replace(nestedRow, " (+1)", " (+1 more)", 1)), "claude_agents_panel_unverified"},
 		{"monitor_bad_plural", monitor.withRow(strictClaudeShapeHintRow, strings.Replace(monitorHint, "1 monitor", "1 monitors", 1)), "claude_empty_hint_unverified"},
 		{"monitor_zero", monitor.withRow(strictClaudeShapeHintRow, strings.Replace(monitorHint, "1 monitor", "0 monitors", 1)), "claude_empty_hint_unverified"},
 		{"monitor_then_shell", both.withRow(strictClaudeShapeHintRow, strings.Replace(bothHint, "1 shell, 1 monitor", "1 monitor, 1 shell", 1)), "claude_empty_hint_unverified"},

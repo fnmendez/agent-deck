@@ -138,13 +138,16 @@ func strictClaudeLiveRegionStart(s strictSnapshot, rawLines, lines []string) int
 // main composer and the native record must still prove the main thread idle.
 // The token counter's arrow is ↓ while the subagent streams output and ↑ while
 // its prompt is being sent (measured on 2.1.277); both are display data.
+// A subagent that launched its own subagents shows " (+N)" after its name
+// (measured on 2.1.277 with N=1); it adds no row.
 // Focus is measured on 2.1.277: Down from the empty composer walks the footer
 // pill, then the panel's main row, then each subagent row. Every focused state
 // moves the terminal cursor off the composer (to column 0 of the last row),
 // replaces the hint with navigation help ("↑/↓ to select · Enter to view",
 // "Enter to view · x to stop") and draws a ❯ pointer on the selected row, so a
 // focused panel fails the cursor, hint and row checks independently. Left
-// opens a background-session dialog instead, which the modal check refuses.
+// opens a background-session dialog instead, which moves the cursor off the
+// composer and refuses.
 // Every row must carry exactly the measured UNFOCUSED styling, so a focused or
 // selected panel, a finished or failed agent glyph, or any other shape is
 // refused. Only rows that show the panel's main row are refused as the panel,
@@ -154,7 +157,7 @@ const strictClaudeAgentsPanelMain = "\x1b[1m  ● main\x1b[0m"
 
 const strictClaudeAgentsPanelMaxAgents = 32
 
-var strictClaudeAgentsPanelRow = regexp.MustCompile(`^\x1b\[38;5;246m  ◯ [A-Za-z0-9][A-Za-z0-9_.:-]{0,63}\x1b\[39m  ` +
+var strictClaudeAgentsPanelRow = regexp.MustCompile(`^\x1b\[38;5;246m  ◯ [A-Za-z0-9][A-Za-z0-9_.:-]{0,63}(?: \(\+(?:[1-9]|[1-9][0-9])\))?\x1b\[39m  ` +
 	`\x1b\[38;5;246m[^\x1b]{1,512}\x1b\[39m +` +
 	`\x1b\[38;5;246m(?:(?:[1-9]|1[0-9]|2[0-3])h )?(?:[1-5]?[0-9]m )?[1-5]?[0-9]s · [↑↓] (?:[1-9][0-9]{0,2}|[1-9][0-9]{0,2}(?:\.[0-9])?k) tokens\x1b\[39m$`)
 
