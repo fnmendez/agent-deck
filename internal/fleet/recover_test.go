@@ -649,3 +649,34 @@ func TestHealthString(t *testing.T) {
 		}
 	}
 }
+
+// A restart that refuses to guess a Claude conversation touched nothing: it is
+// skipped for the operator and must not trip the consecutive-failure brake,
+// or three ambiguous rows in one shared directory would strand the fleet.
+func TestRecoverSkipsAmbiguousConversationWithoutTrippingBrake(t *testing.T) {
+	r := &recorder{}
+	rec := newTestRecoverer(r, func(*session.Instance) VerifyReport { return bootedReport() })
+	ambiguous := map[string]bool{"a": true, "b": true, "c": true}
+	rec.Restart = func(inst *session.Instance) error {
+		r.restarts = append(r.restarts, inst.Title)
+		if ambiguous[inst.Title] {
+			return fmt.Errorf("restart %q: %w", inst.Title, session.ErrRestartConversationAmbiguous)
+		}
+		return nil
+	}
+	rec.MaxFailures = 3
+
+	sum := rec.Recover(downAssessment("a", "b", "c", "d"))
+
+	if sum.Halted {
+		t.Fatalf("Halted = true, want false: %s", sum.HaltReason)
+	}
+	if len(r.restarts) != 4 || sum.Recovered != 1 || sum.Failed != 0 || sum.Skipped != 3 {
+		t.Fatalf("restarts=%v summary=%+v, want 3 skipped for the operator and d recovered", r.restarts, sum)
+	}
+	for _, res := range sum.Results[:3] {
+		if res.Outcome != OutcomeSkipped || !strings.Contains(res.Reason, "needs operator") {
+			t.Errorf("result %q = %q (%s), want skipped/needs operator", res.Title, res.Outcome, res.Reason)
+		}
+	}
+}

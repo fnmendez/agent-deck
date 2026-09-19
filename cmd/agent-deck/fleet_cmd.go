@@ -207,6 +207,14 @@ func handleFleetRecover(profile string, args []string) {
 	plan := cfg.plan
 	rec := cfg.recoverer()
 	rec.Persist = storage.PersistRecoveredInstances
+	// Claude conversations are resolved from project path + title against
+	// every other row, so a recovered session cannot resume a sibling's.
+	if restart := rec.Restart; restart != nil {
+		rec.Restart = func(inst *session.Instance) error {
+			inst.SetRestartPeers(instances)
+			return restart(inst)
+		}
+	}
 	if !plan && !*jsonOutput && !quietMode {
 		rec.Progress = func(index, total int, c fleet.Candidate) {
 			fmt.Printf("[%d/%d] restarting %s...\n", index, total, c.Title())

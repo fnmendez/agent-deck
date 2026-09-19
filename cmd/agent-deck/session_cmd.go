@@ -652,11 +652,18 @@ func handleSessionRestart(profile string, args []string) {
 	all := fs.Bool("all", false, "Restart all active sessions")
 	envFlags := make(envVarFlags)
 	fs.Var(&envFlags, "env", "Environment variable in KEY=VALUE format for the restarted process (can be repeated)")
+	sessionIDOverride := fs.String("session-id", "", "Claude only: resume exactly this conversation UUID instead of resolving it from project path + title")
 
 	fs.Usage = func() {
 		fmt.Println("Usage: agent-deck session restart [id|title] [options]")
 		fmt.Println()
 		fmt.Println("Restart a session. For Claude sessions, this reloads MCPs.")
+		fmt.Println()
+		fmt.Println("For Claude sessions the conversation to resume is resolved from the")
+		fmt.Println("session's project path and title, not the stored conversation id (which")
+		fmt.Println("goes stale after /clear): the newest transcript of that project directory")
+		fmt.Println("whose /rename title matches the session title. When that is ambiguous the")
+		fmt.Println("restart is refused; --session-id <uuid> forces a specific conversation.")
 		fmt.Println()
 		fmt.Println("By default, a restart is skipped (no-op) when the session is already")
 		fmt.Println("healthy (running/waiting/idle/starting) and was started within the last")
@@ -697,6 +704,10 @@ func handleSessionRestart(profile string, args []string) {
 	}
 
 	if *all {
+		if strings.TrimSpace(*sessionIDOverride) != "" {
+			out.Error("--session-id cannot be combined with --all", ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
 		restartAllSessions(out, storage, instances, groups, envFlags)
 		return
 	}
@@ -723,7 +734,7 @@ func handleSessionRestart(profile string, args []string) {
 	// scope intact) when the session is healthy and was started very
 	// recently. A watchdog racing `start` → `restart` on the same session
 	// must not tear down the fresh scope.
-	if skip, reason := session.ShouldSkipRestart(inst, time.Now(), *force || len(envFlags) > 0); skip {
+	if skip, reason := session.ShouldSkipRestart(inst, time.Now(), *force || len(envFlags) > 0 || strings.TrimSpace(*sessionIDOverride) != ""); skip {
 		data := map[string]interface{}{
 			"success": true,
 			"skipped": true,
@@ -735,7 +746,22 @@ func handleSessionRestart(profile string, args []string) {
 		return
 	}
 
-	// Restart the session
+	override := strings.TrimSpace(*sessionIDOverride)
+	if override != "" {
+		if !session.IsClaudeCompatible(inst.Tool) {
+			out.Error(fmt.Sprintf("--session-id applies to Claude sessions only (%s is %s)", inst.Title, inst.Tool), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+		if !session.IsBareClaudeSessionUUID(override) {
+			out.Error(fmt.Sprintf("invalid --session-id %q: expected a bare lowercase UUID", override), ErrCodeInvalidOperation)
+			os.Exit(1)
+		}
+	}
+
+	// Restart the session. The Claude conversation is resolved from project
+	// path + title against every other row (see session.SetRestartPeers).
+	inst.SetRestartPeers(instances)
+	inst.SetRestartClaudeSessionOverride(override)
 	if err := inst.RestartWithEnv(envFlags); err != nil {
 		out.Error(fmt.Sprintf("failed to restart session: %v", err), ErrCodeInvalidOperation)
 		os.Exit(1)
@@ -764,6 +790,9 @@ func handleSessionRestart(profile string, args []string) {
 		"success": true,
 		"id":      inst.ID,
 		"title":   inst.Title,
+	}
+	if session.IsClaudeCompatible(inst.Tool) && inst.ClaudeSessionID != "" {
+		data["claude_session_id"] = inst.ClaudeSessionID
 	}
 	if warning != "" {
 		data["warning"] = warning
@@ -808,6 +837,7 @@ func restartAllSessions(out *CLIOutput, storage *session.Storage, instances []*s
 			fmt.Printf("Restarting %s...\n", inst.Title)
 		}
 
+		inst.SetRestartPeers(instances)
 		if err := inst.RestartWithEnv(env); err != nil {
 			errMsg := fmt.Sprintf("failed to restart session '%s': %v", inst.Title, err)
 			if !out.jsonMode {

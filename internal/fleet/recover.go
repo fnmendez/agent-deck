@@ -1,6 +1,7 @@
 package fleet
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -263,6 +264,21 @@ func (r *Recoverer) Recover(as Assessment) Summary {
 		sum.Attempted++
 
 		if err := r.restart(c.Instance); err != nil {
+			// Restart refused to guess which Claude conversation this session
+			// owns. Nothing was touched, so this is neither a failed boot nor
+			// evidence for the failure brake: skip it for the operator and let
+			// the sweep continue with the rest of the fleet.
+			if errors.Is(err, session.ErrRestartConversationAmbiguous) {
+				attempts--
+				sum.Attempted--
+				res.Outcome = OutcomeSkipped
+				res.Reason = "needs operator: " + err.Error()
+				res.Err = err
+				sum.Skipped++
+				sum.Results = append(sum.Results, res)
+				r.logf("fleet_recover_skipped_ambiguous_conversation", c, slog.String("error", err.Error()))
+				continue
+			}
 			res.Outcome = OutcomeFailed
 			res.Err = err
 			sum.Failed++
