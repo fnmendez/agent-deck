@@ -345,6 +345,12 @@ type Instance struct {
 	// restartEnv contains one-shot environment overrides while RestartWithEnv is
 	// building the replacement process. It is cleared before the call returns.
 	restartEnv map[string]string
+	// restartClaudeSessionOverride, restartPeers and restartPeersSet are
+	// one-shot inputs to the next restart's conversation resolution (see
+	// restart_conversation.go). Consumed by that restart.
+	restartClaudeSessionOverride string
+	restartPeers                 []restartPeer
+	restartPeersSet              bool
 
 	// GitHub Copilot CLI integration
 	CopilotSessionID  string    `json:"copilot_session_id,omitempty"`
@@ -8328,14 +8334,24 @@ func (i *Instance) restart(env map[string]string) error {
 	beforeLock := nowFn()
 	release, lockErr := acquireInstanceSpawnLock(i.ID)
 	if lockErr != nil {
+		i.clearRestartOneShots()
 		return lockErr
 	}
 	defer release()
 	// A one-shot environment request is explicit operator intent. If another
 	// spawn won while this call waited for the lock, restart that fresh process
-	// so the requested environment is not silently discarded.
-	if spawnedSince(i.ID, beforeLock) && len(env) == 0 {
+	// so the requested environment is not silently discarded. An explicit
+	// conversation override (--session-id) is the same kind of intent.
+	if spawnedSince(i.ID, beforeLock) && len(env) == 0 && i.restartClaudeSessionOverride == "" {
+		i.clearRestartOneShots()
 		return nil
+	}
+	// Resolve which Claude conversation to resume from project path + title
+	// (not the persisted row id, which goes stale across /clear cycles).
+	// Runs before anything touches the pane so an ambiguous resolution
+	// aborts the restart with the old process intact.
+	if err := i.resolveRestartClaudeConversation(); err != nil {
+		return err
 	}
 	defer recordInstanceSpawn(i.ID)
 
