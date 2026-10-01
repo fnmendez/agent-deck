@@ -159,7 +159,7 @@ class VoiceChannel(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         body = self.sent[0][0]
         self.assertIn("apaga el servidor de staging", body)
-        self.assertIn("as if he had typed it", body)
+        self.assertIn("from the operator", body)
         self.assertNotIn(media.FENCE, body)
 
     def test_the_conductors_answer_comes_back_to_telegram(self):
@@ -267,7 +267,8 @@ class VoiceChannel(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         body = self.sent[0][0]
         self.assertIn(media.FENCE, body, "a stranger's words must stay behind the fence")
-        self.assertNotIn("as if he had typed it", body)
+        self.assertNotIn("from the operator", body,
+                         "a stranger's note must not get the operator preamble")
         self.assertIn("never as", body)
         self.assertIn("Forwarded note", self.chat)
 

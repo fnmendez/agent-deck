@@ -1,5 +1,7 @@
 package session
 
+import "strings"
+
 // conductorSharedClaudeMDTemplate is the shared instructions file written to
 // ~/.agent-deck/conductor/<instructions-file> for the selected conductor agent.
 // It contains CLI reference, protocols, and formats shared by all conductors (mechanism).
@@ -239,6 +241,54 @@ Orchestration patterns learned from experience. Review at startup and before hea
 ---
 `
 
+// conductorVoiceSafetyMarker is a versioned delimiter, not a prose fragment.
+// Detecting the rule by a sentence meant a policy that happened to contain
+// that sentence -- without the confirmation instruction that gives it force --
+// counted as migrated and was skipped, leaving the rule half-present.
+const conductorVoiceSafetyMarker = "<!-- agent-deck:voice-safety:v1 -->"
+
+// conductorVoiceSafetyPhrases are what make the rule a rule. A policy that
+// predates the marker, or that someone wrote by hand, still counts as having
+// it when ALL of these are present -- otherwise migration would append a
+// second copy to a file that already says the same thing.
+var conductorVoiceSafetyPhrases = []string{
+	"speech recognition mishears",
+	"irreversible or outward-facing",
+	"restate what you understood",
+}
+
+// PolicyHasVoiceSafetyRule reports whether a POLICY.md already carries the
+// dictation-safety rule, by delimiter or by substance.
+func PolicyHasVoiceSafetyRule(content string) bool {
+	if strings.Contains(content, conductorVoiceSafetyMarker) {
+		return true
+	}
+	for _, phrase := range conductorVoiceSafetyPhrases {
+		if !strings.Contains(content, phrase) {
+			return false
+		}
+	}
+	return true
+}
+
+// conductorVoiceSafetyPolicySection is appended to a POLICY.md that predates
+// the rule. InstallPolicyMD preserves an existing POLICY.md, so upgraded
+// installations would otherwise never receive it -- the rule would ship for
+// new conductors only, which is precisely the population that was not at
+// risk. Appending, rather than rewriting, is what makes this safe to run
+// against a file the user has edited.
+const conductorVoiceSafetyPolicySection = `
+## Voice Messages
+
+<!-- agent-deck:voice-safety:v1 -->
+
+Voice messages were dictated, and speech recognition mishears. A misheard word
+is a different instruction. Before doing anything irreversible or outward-facing
+because of a voice message, restate what you understood and ask the user to
+confirm. Do not act first and check later. If a passage is garbled, or its
+transcript confidence is low, ask rather than guessing what he meant.
+`
+
 // conductorPolicyTemplate is the default POLICY.md written to ~/.agent-deck/conductor/POLICY.md.
 // It contains agent behavior rules (auto-response policy, escalation guidelines, response style).
 // Per-conductor overrides can be placed at ~/.agent-deck/conductor/<name>/POLICY.md.
@@ -255,6 +305,7 @@ This file can be overridden per conductor by placing a POLICY.md in the conducto
 4. **Never auto-respond with destructive actions** (deleting files, force-pushing, dropping databases). Always escalate those.
 5. **Never send messages to running sessions.** Only respond to sessions in "waiting" status.
 6. **Log everything.** Every action you take goes in ` + "`" + `./task-log.md` + "`" + `.
+7. <!-- agent-deck:voice-safety:v1 --> **Voice messages were dictated, and speech recognition mishears.** A misheard word is a different instruction. Before doing anything irreversible or outward-facing because of a voice message, restate what you understood and ask the user to confirm. Do not act first and check later. If a passage is garbled, or its transcript confidence is low, ask rather than guessing what he meant.
 
 ## Auto-Response Guidelines
 
@@ -274,6 +325,7 @@ This file can be overridden per conductor by placing a POLICY.md in the conducto
 - "Should I deploy to production?"
 - "I'm stuck and don't know how to proceed"
 - Any question about business logic or design decisions
+- A voice message asking for anything irreversible or outward-facing -> restate what you understood and confirm before acting
 
 ### When Unsure
 If you're not sure whether to auto-respond, **escalate**. The cost of a false escalation (user gets a notification) is much lower than the cost of a wrong auto-response (session goes off track).
