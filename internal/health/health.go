@@ -147,11 +147,22 @@ func remoteWarning(name string, r Remote) string {
 		strconv.QuoteToASCII(name), float64(r.StatusPassMS)/1000, r.TmuxCalls, r.Sessions)
 }
 
+// TmuxCallBaseline is the per-pass tmux work that does not scale with the
+// session count (server and pane-list probes). Without it a TUI with zero or
+// one local session, everything else on remotes, trips the budget every pass.
+const TmuxCallBaseline = 2
+
+// TmuxCallsOverBudget reports a status pass that made more than twice the
+// session count in tmux calls, beyond the fixed per-pass baseline.
+func TmuxCallsOverBudget(sessions int, tmuxCalls int64) bool {
+	return tmuxCalls > int64(2*sessions+TmuxCallBaseline)
+}
+
 func BudgetWarning(d time.Duration, sessions int, tmuxCalls int64) string {
 	if statusPassSustainedBreach(d) {
 		return "Health: status pass exceeds 250 ms budget"
 	}
-	if tmuxCalls > int64(2*sessions) {
+	if TmuxCallsOverBudget(sessions, tmuxCalls) {
 		return "Health: tmux calls exceed twice the session count"
 	}
 	return ""
