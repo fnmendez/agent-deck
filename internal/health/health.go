@@ -213,6 +213,11 @@ func remoteWarning(name string, r Remote) string {
 		strconv.QuoteToASCII(name), float64(r.StatusPassMS)/1000, r.TmuxCalls, r.Sessions)
 }
 
+// TmuxCallBaseline is the per-pass tmux work that does not scale with the
+// session count (server and pane-list probes). Without it a TUI with zero or
+// one local session, everything else on remotes, trips the budget every pass.
+const TmuxCallBaseline = 2
+
 func BudgetWarning(d time.Duration, sessions int, tmuxCalls int64) string {
 	// Always record both series. Returning on the first breach would freeze
 	// the other tracker's consecutive count on a stale value.
@@ -294,10 +299,11 @@ func tmuxCallsSustainedBreach(sessions int, tmuxCalls int64) bool {
 }
 
 // tmuxCallsOverBudget is the per-sample tmux budget shared by the footer and
-// the health report: more than twice as many tmux starts as sessions. With no
-// sessions the ratio is undefined, so the sample is not a breach.
+// the health report: more than twice as many tmux starts as sessions, beyond
+// the fixed per-pass TmuxCallBaseline. With no sessions the ratio is
+// undefined, so the sample is not a breach.
 func tmuxCallsOverBudget(sessions int, tmuxCalls int64) bool {
-	return sessions > 0 && tmuxCalls > int64(2*sessions)
+	return sessions > 0 && tmuxCalls > int64(2*sessions+TmuxCallBaseline)
 }
 
 // ResetStatusPassBreachState clears the sustained-breach trackers. Exposed for tests only.
