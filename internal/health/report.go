@@ -252,7 +252,7 @@ func Format(s Summary) string {
 	if s.Budgets.OpenFDsSupport == OpenFDsUnsupported {
 		descriptors = "descriptors unsupported on this platform"
 	}
-	fmt.Fprintf(&b, "  Budgets: status pass <%.0f ms; %s; tmux calls <=%d per session; remote poll <%.0f ms\n", s.Budgets.StatusPassMS, descriptors, s.Budgets.TmuxCallsPerSession, s.Budgets.RemotePollMS)
+	fmt.Fprintf(&b, "  Budgets: status pass <%.0f ms; %s; tmux calls <=%d per session + %d per pass; remote poll <%.0f ms\n", s.Budgets.StatusPassMS, descriptors, s.Budgets.TmuxCallsPerSession, TmuxCallBaseline, s.Budgets.RemotePollMS)
 	for _, flag := range s.Flags {
 		fmt.Fprintf(&b, "  %s\n", flag)
 	}
