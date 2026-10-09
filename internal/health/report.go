@@ -187,7 +187,7 @@ func Report(dir string, since time.Duration) (Summary, error) {
 			}
 			sampledFDs = sampledFDs || s.OpenFDs != nil
 			unsupportedFDs = unsupportedFDs || s.OpenFDsSupport == OpenFDsUnsupported
-			if s.Sessions != nil && s.TmuxCalls != nil && *s.TmuxCalls > int64(2*(*s.Sessions)) {
+			if s.Sessions != nil && s.TmuxCalls != nil && TmuxCallsOverBudget(*s.Sessions, *s.TmuxCalls) {
 				add("tmux calls exceed twice the session count")
 			}
 			for name, r := range s.Remotes {
@@ -237,7 +237,7 @@ func Format(s Summary) string {
 	if s.Budgets.OpenFDsSupport == OpenFDsUnsupported {
 		descriptors = "descriptors unsupported on this platform"
 	}
-	fmt.Fprintf(&b, "  Budgets: status pass <%.0f ms; %s; tmux calls <=%d per session; remote poll <%.0f ms\n", s.Budgets.StatusPassMS, descriptors, s.Budgets.TmuxCallsPerSession, s.Budgets.RemotePollMS)
+	fmt.Fprintf(&b, "  Budgets: status pass <%.0f ms; %s; tmux calls <=%d per session + %d per pass; remote poll <%.0f ms\n", s.Budgets.StatusPassMS, descriptors, s.Budgets.TmuxCallsPerSession, TmuxCallBaseline, s.Budgets.RemotePollMS)
 	for _, flag := range s.Flags {
 		fmt.Fprintf(&b, "  %s\n", flag)
 	}

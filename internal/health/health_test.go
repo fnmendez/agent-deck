@@ -16,7 +16,7 @@ func TestReportBudgetsUnknownAndPartial(t *testing.T) {
 	d := t.TempDir()
 	now := time.Now().UTC()
 	p := filepath.Join(d, "tui-1-test.jsonl")
-	samples := []Sample{{Version: 1, Timestamp: now.Add(-time.Minute), Role: "tui", PID: 1, StartedAt: now.Add(-time.Hour), OpenFDs: ptr(400), StatusPassMS: ptr(100.0)}, {Version: 1, Timestamp: now, Role: "tui", PID: 1, StartedAt: now.Add(-time.Hour), OpenFDs: ptr(600), StatusPassMS: ptr(300.0), Sessions: ptr(2), TmuxCalls: ptr(int64(5)), Remotes: map[string]Remote{"test": {LatencyMS: 2500, Outcome: "error"}}}}
+	samples := []Sample{{Version: 1, Timestamp: now.Add(-time.Minute), Role: "tui", PID: 1, StartedAt: now.Add(-time.Hour), OpenFDs: ptr(400), StatusPassMS: ptr(100.0)}, {Version: 1, Timestamp: now, Role: "tui", PID: 1, StartedAt: now.Add(-time.Hour), OpenFDs: ptr(600), StatusPassMS: ptr(300.0), Sessions: ptr(2), TmuxCalls: ptr(int64(7)), Remotes: map[string]Remote{"test": {LatencyMS: 2500, Outcome: "error"}}}}
 	var data []byte
 	for _, s := range samples {
 		b, _ := json.Marshal(s)
@@ -276,5 +276,27 @@ func TestRemoteWarning_FallsBackWithoutStats(t *testing.T) {
 	want := `Health: remote "legacyhost" poll is slow or failed`
 	if got != want {
 		t.Fatalf("warning = %q, want %q", got, want)
+	}
+}
+
+func TestTmuxCallBudgetAllowsTheFixedPerPassBaseline(t *testing.T) {
+	// A TUI whose sessions all live on remotes polls 0-1 local sessions with
+	// about two fixed tmux calls per pass; that is not over budget.
+	for _, tc := range []struct {
+		sessions int
+		calls    int64
+		over     bool
+	}{
+		{0, 0, false}, {0, 2, false}, {0, 3, true},
+		{1, 2, false}, {1, 4, false}, {1, 5, true},
+		{10, 22, false}, {10, 23, true},
+	} {
+		if got := TmuxCallsOverBudget(tc.sessions, tc.calls); got != tc.over {
+			t.Errorf("TmuxCallsOverBudget(%d, %d) = %v, want %v", tc.sessions, tc.calls, got, tc.over)
+		}
+		warning := BudgetWarning(time.Millisecond, tc.sessions, tc.calls)
+		if want := tc.over; strings.Contains(warning, "tmux calls") != want {
+			t.Errorf("BudgetWarning(%d sessions, %d calls) = %q", tc.sessions, tc.calls, warning)
+		}
 	}
 }
