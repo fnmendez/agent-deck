@@ -353,6 +353,9 @@ func (h *Home) handleNewDialogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (h *Home) showRemoteNewSessionDialog(item session.Item) tea.Cmd {
 	remoteName := item.RemoteName
 	if remoteName == "" {
+		if isFlatRemotesHeader(item) {
+			h.setError(errFlatRemotesNoRemote)
+		}
 		return nil
 	}
 

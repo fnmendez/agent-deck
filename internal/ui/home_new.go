@@ -294,6 +294,7 @@ func NewHomeWithProfileAndMode(profile string) *Home {
 		h.footerMode = cfg.UI.GetFooter()
 		h.attachOnCreate = cfg.UI.GetAttachOnCreate()
 		h.viewModeOpts.ActiveIncludesIdle = cfg.UI.GetActiveIncludesIdle()
+		h.flatRemotes = cfg.UI.GetFlatRemotes()
 	} else {
 		h.fullRepaint = (session.DisplaySettings{}).GetFullRepaint()
 		h.activeFilterExcludes = (session.DisplaySettings{}).GetActiveFilterExcludes()

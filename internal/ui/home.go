@@ -773,6 +773,16 @@ type Home struct {
 	// (active_includes_idle, #2452). Zero value: today's split.
 	viewModeOpts session.ViewModeOptions
 
+	// flatRemotes lists every remote session under one "remotes" header
+	// (config.toml [ui] flat_remotes). Default false: one header per remote.
+	// flatRemoteNames holds the remotes whose rows the last rebuild put under
+	// that header, for its counts, its preview and R.
+	// flatRemoteDupTitles holds, lowercased, the titles more than one flat
+	// row shows; those rows name their remote so they can be told apart.
+	flatRemotes         bool
+	flatRemoteNames     []string
+	flatRemoteDupTitles map[string]bool
+
 	// Performance observability (debug mode only, zero cost when off)
 	debugMode          bool         // true when AGENTDECK_DEBUG=1, enables perf overlay
 	lastRenderDuration atomic.Int64 // microseconds, for debug status bar
@@ -6182,7 +6192,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		} else if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
-			if item.Type == session.ItemTypeRemoteGroup {
+			if isFlatRemotesHeader(item) {
+				h.setError(errFlatRemotesNoRemote)
+			} else if item.Type == session.ItemTypeRemoteGroup {
 				// Remote group header (incl. the level-0 host header): create
 				// the group on the remote itself. The parent defaults to the
 				// header's own group path so Enter creates a remote subgroup;
@@ -6363,6 +6375,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Check if cursor is on a remote group/session — create on remote instead
 		if h.cursor >= 0 && h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			if isFlatRemotesHeader(item) {
+				h.setError(errFlatRemotesNoRemote)
+				return h, nil
+			}
 			if item.Type == session.ItemTypeRemoteGroup || item.Type == session.ItemTypeRemoteSession {
 				return h, h.createRemoteSession(item.RemoteName)
 			}
@@ -6395,6 +6411,8 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			} else if item.Type == session.ItemTypeRemoteSession && item.RemoteSession != nil {
 				h.confirmDialog.ShowDeleteRemoteSession(item.RemoteName, item.RemoteSession.ID, item.RemoteSession.Title)
+			} else if isFlatRemotesHeader(item) {
+				h.setError(errFlatRemotesNoRemote)
 			} else if item.Type == session.ItemTypeRemoteGroup && item.Level == 0 {
 				// The host header of a provider sandbox: offer to destroy the
 				// sandbox (stopping its sessions, after a confirm that says how
@@ -6514,6 +6532,10 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			item := h.flatItems[h.cursor]
 			// #2164: on a remote host header that runs an older release, u
 			// offers the update instead. A header without drift is a no-op.
+			if isFlatRemotesHeader(item) {
+				h.setError(errFlatRemotesNoRemote)
+				return h, nil
+			}
 			if item.Type == session.ItemTypeRemoteGroup && item.Level == 0 {
 				if state, ok := h.remoteVersionState(item.RemoteName); ok && state.Outdated(Version) {
 					h.confirmDialog.ShowUpdateRemote(item.RemoteName, state.Version, Version)
@@ -6725,6 +6747,9 @@ func (h *Home) handleMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Restart session (recreate tmux session with resume)
 		if h.cursor < len(h.flatItems) {
 			item := h.flatItems[h.cursor]
+			if isFlatRemotesHeader(item) {
+				return h, h.retryFlatRemotePolls()
+			}
 			if item.Type == session.ItemTypeRemoteGroup && item.Level == 0 {
 				return h, h.retryRemotePoll(item.RemoteName)
 			}

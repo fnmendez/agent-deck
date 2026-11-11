@@ -681,6 +681,14 @@ type UISettings struct {
 	// today's working-vs-idle split. Issue #2452.
 	ActiveIncludesIdle bool `toml:"active_includes_idle,omitempty"`
 
+	// FlatRemotes lists every remote session in the TUI under one "remotes"
+	// header, at the root level and sorted by name, instead of one
+	// "remotes/<name>" header per remote with that remote's groups below it.
+	// A child session still nests under its parent on the same remote. Each
+	// row keeps its remote, so every row action is unchanged. Default false
+	// keeps the per-remote tree exactly as before.
+	FlatRemotes bool `toml:"flat_remotes,omitempty"`
+
 	// RemotePreview configures which fields the remote preview panel
 	// (right side, `remotes/<name>` host row selected) shows, and in what
 	// order. See RemotePreviewSettings.
@@ -1076,6 +1084,12 @@ func (u UISettings) GetAttachOnCreate() bool {
 // sessions with a live pane in its top section. Default false.
 func (u UISettings) GetActiveIncludesIdle() bool {
 	return u.ActiveIncludesIdle
+}
+
+// GetFlatRemotes reports whether the TUI lists all remote sessions under one
+// flat "remotes" header. Default false.
+func (u UISettings) GetFlatRemotes() bool {
+	return u.FlatRemotes
 }
 
 // GetRemoteLatencyRefreshSecs returns the remote latency refresh interval

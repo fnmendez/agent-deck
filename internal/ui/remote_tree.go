@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -248,6 +249,168 @@ func buildRemoteFlatItemsForViewMode(remoteName string, sessions []session.Remot
 	rows := buildRemoteRows(remoteName, top, collapsed, order, groupPaths, nil)
 	rows = append(rows, session.Item{Type: session.ItemTypeDivider, DividerLabel: mode.DividerLabel(opts)})
 	return append(rows, bottomRows[1:]...)
+}
+
+// flatRemotesRootPath is the Path of the single header the flat remotes layout
+// ([ui] flat_remotes) draws for every remote. It carries no RemoteName: the
+// rows under it each name their own remote.
+const flatRemotesRootPath = "remotes"
+
+// errFlatRemotesNoRemote answers a per-remote action (new session, new group)
+// taken on the flat remotes header, which belongs to no single remote.
+var errFlatRemotesNoRemote = errors.New("select a session of the remote to act on: the remotes header spans every remote")
+
+// isFlatRemotesHeader reports whether item is the flat remotes layout's header.
+func isFlatRemotesHeader(item session.Item) bool {
+	return item.Type == session.ItemTypeRemoteGroup && item.RemoteName == "" && item.Path == flatRemotesRootPath
+}
+
+// flatRemoteBlock is one top-level row of the flat remotes layout and the
+// children that render under it, all from the same remote.
+type flatRemoteBlock struct {
+	remoteName string
+	parent     *session.RemoteSessionInfo
+	children   []*session.RemoteSessionInfo
+}
+
+// buildFlatRemoteRows renders the sessions of every remote in remoteNames
+// under one Level-0 header (Path flatRemotesRootPath, no RemoteName) for the
+// [ui] flat_remotes layout. Remote groups get no header: each session sits at
+// Level 1, sorted by title (case-insensitive, stable over the remotes' order
+// in remoteNames and each remote's own listing). A child whose parent is
+// another session of the same remote sits directly under it, one level
+// deeper (#2450, see remoteNestedParents); a child whose parent is not listed
+// stays at Level 1. Every row keeps its RemoteName and its Group, so row
+// actions reach the right remote; its Path is the header's, so folding from a
+// row folds the header.
+//
+// A collapsed header is still emitted with its descendants withheld. No
+// remote means no header. "Active on top" splits the list the way it splits
+// one remote's section (#2947): blocks holding a live session, a divider,
+// then the rest; a parent and its children move as one block. The manual row
+// order overlay (#1875) and empty remote groups do not apply here.
+func buildFlatRemoteRows(remoteNames []string, remotes map[string][]session.RemoteSessionInfo, collapsed map[string]bool, mode session.GroupViewMode, opts session.ViewModeOptions) []session.Item {
+	if len(remoteNames) == 0 {
+		return nil
+	}
+	items := []session.Item{{
+		Type:  session.ItemTypeRemoteGroup,
+		Path:  flatRemotesRootPath,
+		Level: 0,
+	}}
+	if collapsed[flatRemotesRootPath] {
+		return items
+	}
+
+	byTitle := func(a, b *session.RemoteSessionInfo) bool {
+		return strings.ToLower(a.Title) < strings.ToLower(b.Title)
+	}
+	var blocks []flatRemoteBlock
+	for _, remoteName := range remoteNames {
+		sessions := remotes[remoteName]
+		ids := make([]string, len(sessions))
+		parents := make([]string, len(sessions))
+		for i := range sessions {
+			ids[i] = sessions[i].ID
+			parents[i] = sessions[i].ParentSessionID
+		}
+		nested := remoteNestedParents(ids, parents)
+		children := make(map[string][]*session.RemoteSessionInfo, len(nested))
+		for i := range sessions {
+			if parentID, ok := nested[sessions[i].ID]; ok {
+				children[parentID] = append(children[parentID], &sessions[i])
+			}
+		}
+		for i := range sessions {
+			if _, ok := nested[sessions[i].ID]; ok {
+				continue
+			}
+			kids := children[sessions[i].ID]
+			sort.SliceStable(kids, func(a, b int) bool { return byTitle(kids[a], kids[b]) })
+			blocks = append(blocks, flatRemoteBlock{remoteName: remoteName, parent: &sessions[i], children: kids})
+		}
+	}
+	sort.SliceStable(blocks, func(a, b int) bool { return byTitle(blocks[a].parent, blocks[b].parent) })
+
+	emit := func(blocks []flatRemoteBlock) {
+		for t, blk := range blocks {
+			lastTop := t == len(blocks)-1
+			items = append(items, session.Item{
+				Type:          session.ItemTypeRemoteSession,
+				RemoteSession: blk.parent,
+				RemoteName:    blk.remoteName,
+				Path:          flatRemotesRootPath,
+				Level:         1,
+				IsLastInGroup: lastTop && len(blk.children) == 0,
+			})
+			for k, kid := range blk.children {
+				lastKid := k == len(blk.children)-1
+				items = append(items, session.Item{
+					Type:                session.ItemTypeRemoteSession,
+					RemoteSession:       kid,
+					RemoteName:          blk.remoteName,
+					Path:                flatRemotesRootPath,
+					Level:               2,
+					IsLastInGroup:       lastTop && lastKid,
+					IsSubSession:        true,
+					IsLastSubSession:    lastKid,
+					ParentIsLastInGroup: lastTop,
+				})
+			}
+		}
+	}
+
+	if mode == session.GroupViewActiveTop {
+		live := func(s *session.RemoteSessionInfo) bool {
+			return !s.Archived && opts.CountsAsActive(session.Status(s.Status))
+		}
+		var top, bottom []flatRemoteBlock
+		for _, blk := range blocks {
+			isLive := live(blk.parent)
+			for _, kid := range blk.children {
+				isLive = isLive || live(kid)
+			}
+			if isLive {
+				top = append(top, blk)
+			} else {
+				bottom = append(bottom, blk)
+			}
+		}
+		if len(top) > 0 && len(bottom) > 0 {
+			emit(top)
+			items = append(items, session.Item{Type: session.ItemTypeDivider, DividerLabel: mode.DividerLabel(opts)})
+			emit(bottom)
+			return items
+		}
+	}
+	emit(blocks)
+	return items
+}
+
+// flatRemoteSharedTitles returns, lowercased, the titles that more than one
+// session row of rows shows. In the flat remotes layout rows show the title
+// alone, so only these name their remote, to tell the twins apart.
+func flatRemoteSharedTitles(rows []session.Item) map[string]bool {
+	seen := make(map[string]int)
+	for _, row := range rows {
+		if row.Type == session.ItemTypeRemoteSession && row.RemoteSession != nil {
+			seen[strings.ToLower(row.RemoteSession.Title)]++
+		}
+	}
+	shared := make(map[string]bool)
+	for title, n := range seen {
+		if n > 1 {
+			shared[title] = true
+		}
+	}
+	return shared
+}
+
+// flatRemoteTitleIsShared reports whether item is a flat remotes row whose
+// title another visible flat row shows too.
+func (h *Home) flatRemoteTitleIsShared(item session.Item) bool {
+	return h.flatRemotes && item.Path == flatRemotesRootPath && item.RemoteSession != nil &&
+		h.flatRemoteDupTitles[strings.ToLower(item.RemoteSession.Title)]
 }
 
 // genuinelyEmptyRemoteGroups returns the paths of groupPaths that hold no

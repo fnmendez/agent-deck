@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -210,7 +211,7 @@ func (h *Home) retryRemotePoll(name string) tea.Cmd {
 		h.remoteSessionsMu.RUnlock()
 		if active {
 			h.remotePollMu.Unlock()
-			return remotePollRetryFailedMsg{fmt.Errorf("remote %q poll is already in progress", name)}
+			return remotePollRetryFailedMsg{fmt.Errorf("remote %q %w", name, errRemotePollInProgress)}
 		}
 		err = session.ResetRemotePoll(name)
 		h.remotePollMu.Unlock()
@@ -231,3 +232,39 @@ func (h *Home) retryRemotePoll(name string) tea.Cmd {
 }
 
 type remotePollRetryFailedMsg struct{ err error }
+
+// errRemotePollInProgress is the retry refusal for a remote already mid-poll.
+var errRemotePollInProgress = errors.New("poll is already in progress")
+
+// retryFlatRemotePolls is R on the [ui] flat_remotes header: it retries every
+// remote under the header that is not already mid-poll. Only when every one of
+// them is does it say so; a remote that starts polling between this check and
+// its retry is skipped silently, since the others were refreshed.
+func (h *Home) retryFlatRemotePolls() tea.Cmd {
+	h.remoteSessionsMu.RLock()
+	idle := make([]string, 0, len(h.flatRemoteNames))
+	for _, name := range h.flatRemoteNames {
+		if !h.remotePollActive[name] {
+			idle = append(idle, name)
+		}
+	}
+	h.remoteSessionsMu.RUnlock()
+	if len(idle) == 0 {
+		if len(h.flatRemoteNames) > 0 {
+			h.setError(fmt.Errorf("every remote %w", errRemotePollInProgress))
+		}
+		return nil
+	}
+	cmds := make([]tea.Cmd, 0, len(idle))
+	for _, name := range idle {
+		retry := h.retryRemotePoll(name)
+		cmds = append(cmds, func() tea.Msg {
+			msg := retry()
+			if failed, ok := msg.(remotePollRetryFailedMsg); ok && errors.Is(failed.err, errRemotePollInProgress) {
+				return nil
+			}
+			return msg
+		})
+	}
+	return tea.Batch(cmds...)
+}
