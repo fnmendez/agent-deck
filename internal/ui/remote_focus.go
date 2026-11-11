@@ -67,7 +67,7 @@ func (h *Home) SelectRemoteSession(remote, id string) bool {
 
 	// Open the remote header and every group header above the row.
 	unfolded := false
-	paths := []string{"remotes/" + remote}
+	paths := []string{"remotes/" + remote, flatRemotesRootPath}
 	prefix := ""
 	for _, seg := range strings.Split(normalizeRemoteGroupPath(group), "/") {
 		if prefix == "" {

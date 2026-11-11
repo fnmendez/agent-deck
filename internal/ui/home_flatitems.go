@@ -289,7 +289,9 @@ func (h *Home) moveCursorToGroup(path string) {
 // cursor-identity restore matches on.
 func (h *Home) moveCursorToRemoteGroup(remoteName, path string) {
 	for i, fi := range h.flatItems {
-		if fi.Type == session.ItemTypeRemoteGroup && fi.RemoteName == remoteName && fi.Path == path {
+		// The flat remotes header has no RemoteName; a row under it folds it
+		// with its own remote's name.
+		if fi.Type == session.ItemTypeRemoteGroup && (fi.RemoteName == remoteName || path == flatRemotesRootPath) && fi.Path == path {
 			h.cursor = i
 			return
 		}
@@ -726,12 +728,20 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 	// Header counts are taken once here from the same in-view slices the
 	// renderer used to rescan per header per frame (finding 11).
 	h.remoteHeaderCounts = make(map[string]remoteHeaderCount)
+	h.flatRemoteNames = nil
+	h.flatRemoteDupTitles = nil
 	if len(remotes) > 0 {
 		collapsed := h.remoteGroupsCollapsed
 		if h.embeddedLayout && h.sidebarMode == sidebarFlat {
 			// Flat presentation has no headers to reopen hidden descendants.
 			// Keep the saved folds for the next switch to grouped presentation.
 			collapsed = nil
+		}
+		// [ui] flat_remotes: the remotes that still have rows to show, and
+		// those rows, gathered here and built under one header below.
+		var flatSessions map[string][]session.RemoteSessionInfo
+		if h.flatRemotes {
+			flatSessions = make(map[string][]session.RemoteSessionInfo, len(remoteNames))
 		}
 		for _, remoteName := range remoteNames {
 			sessions := remotes[remoteName]
@@ -749,6 +759,11 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 					continue
 				}
 				sessions = filtered
+			}
+			if h.flatRemotes {
+				h.flatRemoteNames = append(h.flatRemoteNames, remoteName)
+				flatSessions[remoteName] = sessions
+				continue
 			}
 			// Filter before building rows so collapsed headers and connectors
 			// describe the surviving sessions.
@@ -770,6 +785,20 @@ func (h *Home) rebuildFlatItemsAt(now time.Time) {
 					}
 				}
 			}
+			h.flatItems = append(h.flatItems, rows...)
+		}
+		if h.flatRemotes && len(h.flatRemoteNames) > 0 {
+			// The one header counts what each remote's own header would.
+			var total remoteHeaderCount
+			for _, remoteName := range h.flatRemoteNames {
+				c := h.remoteHeaderCounts["remotes/"+remoteName]
+				total.total += c.total
+				total.running += c.running
+				total.waiting += c.waiting
+			}
+			h.remoteHeaderCounts[flatRemotesRootPath] = total
+			rows := buildFlatRemoteRows(h.flatRemoteNames, flatSessions, collapsed, h.groupViewMode, h.viewModeOpts)
+			h.flatRemoteDupTitles = flatRemoteSharedTitles(rows)
 			h.flatItems = append(h.flatItems, rows...)
 		}
 	}

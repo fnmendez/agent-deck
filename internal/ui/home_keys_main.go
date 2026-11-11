@@ -385,6 +385,9 @@ func jumpItemName(item session.Item) string {
 	case session.ItemTypeWindow:
 		return item.WindowName
 	case session.ItemTypeRemoteGroup:
+		if isFlatRemotesHeader(item) {
+			return flatRemotesRootPath
+		}
 		return "remotes/" + item.RemoteName
 	case session.ItemTypeRemoteSession:
 		if item.RemoteSession != nil {

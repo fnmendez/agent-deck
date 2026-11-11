@@ -239,6 +239,9 @@ func renderSimpleMCPLine(b *strings.Builder, mcpInfo *session.MCPInfo, width int
 }
 
 func (h *Home) renderRemotePreview(item session.Item, width, height int) string {
+	if isFlatRemotesHeader(item) {
+		return h.renderFlatRemotesPreview(width, height)
+	}
 	if item.Type == session.ItemTypeRemoteGroup {
 		h.remoteSessionsMu.RLock()
 		sessions := h.remoteSessionsInView(item.RemoteName)
@@ -2656,4 +2659,40 @@ func (h *Home) remoteAccountsLine(remoteName, account string, now time.Time) str
 		}
 	}
 	return fmt.Sprintf("account unknown (slot %q not reported by remote)", slot)
+}
+
+// renderFlatRemotesPreview is the preview panel for the [ui] flat_remotes
+// header. One host's panel (version, load, harnesses) does not fit several
+// hosts, so it lists each remote under the header with its host and session
+// count, or why it is unreachable.
+func (h *Home) renderFlatRemotesPreview(width, height int) string {
+	config, _ := session.LoadUserConfig()
+	total := 0
+	body := make([]string, 0, len(h.flatRemoteNames))
+	for _, name := range h.flatRemoteNames {
+		h.remoteSessionsMu.RLock()
+		count := len(h.remoteSessionsInView(name))
+		poll := h.remotePolls[name]
+		h.remoteSessionsMu.RUnlock()
+		total += count
+		host := name
+		if config != nil && config.Remotes != nil {
+			if rc, ok := config.Remotes[name]; ok {
+				host = remoteHostLabel(rc)
+			}
+		}
+		line := fmt.Sprintf("%s · %s · %d sessions", name, host, count)
+		if poll.LastPollError != "" {
+			line = ErrorStyle.Render(fmt.Sprintf("%s · unreachable: %s", name, poll.LastPollError))
+		}
+		body = append(body, line)
+	}
+	state := EmptyStateConfig{
+		Icon:     "⬡",
+		Title:    "Remotes",
+		Subtitle: fmt.Sprintf("%d remotes — %d sessions", len(h.flatRemoteNames), total),
+		Body:     body,
+		Hints:    []string{"Press Enter on a session to attach via SSH", "Press R here to refresh every remote"},
+	}
+	return renderEmptyStateResponsive(state, width, height)
 }
