@@ -696,6 +696,11 @@ func (h *Home) renderRemoteGroupItemSuffix(b *strings.Builder, item session.Item
 		return
 	}
 
+	if isFlatRemotesHeader(item) {
+		h.renderFlatRemotesHeader(b, item, selected, listWidth, expandIcon, nameStyle, countStyle)
+		return
+	}
+
 	// Level 0: the remote host header. Count the sessions this view shows.
 	counts := h.remoteHeaderCount(item)
 	if h.remotePollUnavailable(item.RemoteName) {
@@ -766,6 +771,62 @@ func (h *Home) renderRemoteGroupItemSuffix(b *strings.Builder, item session.Item
 		voiceMarker,
 		kindMarker,
 		renderRemoteVersionMarker(versionState, Version, selected), // #2164: drift marker, e.g. " v1.15.0 ↑"
+		remoteStatusSuffix(counts.running, counts.waiting, stale),
+		trailer,
+	)
+	b.WriteString(truncateRemoteGroupLine(line, listWidth))
+	b.WriteString("\n")
+}
+
+// renderFlatRemotesHeader renders the single "remotes" header of the
+// [ui] flat_remotes layout. Its counts add up what each remote's own header
+// would show, with the same rule per remote: a remote whose poll is
+// unavailable contributes no running or waiting count, and a stale snapshot
+// dims the glyphs. Per-host details (latency, version, poll timing) have no
+// one value here; the header says how many remotes are unavailable (the rows
+// that show "?" and "last known") and how many run an older release, and the
+// preview panel lists each remote.
+func (h *Home) renderFlatRemotesHeader(b *strings.Builder, item session.Item, selected bool, listWidth int, expandIcon string, nameStyle, countStyle lipgloss.Style) {
+	counts := h.remoteHeaderCount(item)
+	stale := false
+	unavailable, outdated := 0, 0
+	for _, name := range h.flatRemoteNames {
+		if h.remotePollUnavailable(name) {
+			unavailable++
+			c := h.remoteHeaderCounts["remotes/"+name]
+			counts.running -= c.running
+			counts.waiting -= c.waiting
+		} else if _, s := h.remoteRowStale(name); s {
+			stale = true
+		}
+		if state, ok := h.remoteVersionState(name); ok && state.Outdated(Version) {
+			outdated++
+		}
+	}
+	counts.running, counts.waiting = max(0, counts.running), max(0, counts.waiting)
+
+	trailer := ""
+	if unavailable > 0 {
+		trailer += " " + DimStyle.Render(fmt.Sprintf("· %d unavailable", unavailable))
+	}
+	if outdated > 0 {
+		trailer += " " + DimStyle.Render(fmt.Sprintf("· %d outdated", outdated))
+	}
+	h.remoteSessionsMu.RLock()
+	fetching := h.remotesFetchActive
+	h.remoteSessionsMu.RUnlock()
+	if fetching {
+		trailer += " " + DimStyle.Render("· refreshing…")
+	}
+	if selected {
+		trailer += " " + DimStyle.Render("(R retry)")
+	}
+
+	line := fmt.Sprintf("%s%s %s%s%s%s",
+		remoteRowGutter(selected),
+		expandIcon,
+		nameStyle.Render(flatRemotesRootPath),
+		countStyle.Render(fmt.Sprintf(" (%d)", counts.total)),
 		remoteStatusSuffix(counts.running, counts.waiting, stale),
 		trailer,
 	)
@@ -913,12 +974,19 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 		if rowLines == 1 && rs.Tool != "" {
 			toolPrefix = sidebarToolIcon(rs.Tool) + " "
 		}
-		firstPlain := indent + marker + statusIcon + " " + toolPrefix + rs.Title
+		// The card's metadata line names the remote unless the rail is
+		// compact or one line tall; then a title another flat row shares
+		// names it on the identity line instead.
+		title := rs.Title
+		if (h.compactSidebar || rowLines <= 1) && h.flatRemoteTitleIsShared(item) {
+			title += " · " + item.RemoteName
+		}
+		firstPlain := indent + marker + statusIcon + " " + toolPrefix + title
 		first := indent + marker + statusStyle.Render(statusIcon) + " "
 		if toolPrefix != "" {
 			first += GetToolStyle(strings.ToLower(rs.Tool)).Bold(true).Render(sidebarToolIcon(rs.Tool)) + " "
 		}
-		first = fitCellWidth(first+rs.Title, max(1, listWidth))
+		first = fitCellWidth(first+title, max(1, listWidth))
 		secondText := strings.TrimSpace(rs.Status)
 		if rs.Archived {
 			secondText = "archived"
@@ -965,6 +1033,13 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 
 	titleStr := rs.Title
+	// [ui] flat_remotes: a title another flat row shares names its remote
+	// right after it. The suffix belongs to the title, so it is never
+	// clipped before the badges that follow.
+	remoteSuffix := ""
+	if h.flatRemoteTitleIsShared(item) {
+		remoteSuffix = DimStyle.Render(" · " + item.RemoteName)
+	}
 
 	toolStr := ""
 	if rs.Tool != "" && !h.toolBadgeHidden(rs.Tool) {
@@ -1047,6 +1122,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	head := cellWidth(remoteRowGutter(selected) + indent + treeConnector + " " + statusIcon + " ")
 	badges := cellWidth(toolStr) + cellWidth(remoteViewersBadge) + cellWidth(pendingStr) + cellWidth(childFoldBadge)
 	titleFloor := min(cellWidth(titleStr), remoteTitleMinWidth)
+	suffixWidth := cellWidth(remoteSuffix)
 
 	// 🎙 voice badge right after the title when this remote row holds the
 	// mic (voice_badge.go). It is fitted before the tool, viewers and
@@ -1057,7 +1133,7 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	if voiceSt := h.voiceForRemote(item.RemoteName, rs.ID); voiceSt != nil {
 		budget, wordsBudget := -1, -1
 		if listWidth > 0 {
-			available := max(0, listWidth-head-1)
+			available := max(0, listWidth-head-suffixWidth-1)
 			budget = max(0, available-titleFloor)
 			wordsBudget = max(0, available-cellWidth(titleStr)-badges)
 		}
@@ -1065,16 +1141,17 @@ func (h *Home) renderRemoteSessionItemAtWidth(b *strings.Builder, item session.I
 	}
 	titleBudget := remoteTitleMinWidth
 	if listWidth > 0 {
-		titleBudget = max(titleBudget, listWidth-head-voiceWidth-badges-1)
+		titleBudget = max(titleBudget, listWidth-head-suffixWidth-voiceWidth-badges-1)
 	}
 	titleStr = cellTruncate(titleStr, titleBudget, "...")
 
-	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s%s%s%s\n",
+	b.WriteString(fmt.Sprintf("%s%s%s %s %s%s%s%s%s%s%s\n",
 		remoteRowGutter(selected), // align with group/session hotkey gutter
 		indent,
 		DimStyle.Render(treeConnector),
 		sStyle.Render(statusIcon),
 		titleStyle.Render(titleStr),
+		remoteSuffix,
 		voiceBadgeText,
 		toolStr,
 		remoteViewersBadge,
