@@ -1182,6 +1182,12 @@ func (h *Home) moveRemoteItem(item session.Item, delta int) tea.Cmd {
 		edge = "last"
 	}
 
+	if h.flatRemotes {
+		// The flat layout sorts every remote row by name, so a stored order
+		// would change nothing on screen.
+		h.setError(fmt.Errorf("cannot move %s: remote sessions are sorted by name while [ui] flat_remotes is on", direction))
+		return nil
+	}
 	if item.Type == session.ItemTypeRemoteGroup {
 		return h.reorderRemoteGroup(item, delta)
 	}
